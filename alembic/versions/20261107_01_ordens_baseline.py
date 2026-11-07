@@ -88,6 +88,12 @@ def upgrade() -> None:
         sa.Column("payment_amount", sa.Numeric(12, 2)),
         sa.Column("payment_confirmed_at", sa.DateTime(timezone=True)),
         sa.Column("payment_quote_version", sa.Integer()),
+        sa.CheckConstraint(
+            "status IN ('RECEBIDA', 'EM_DIAGNOSTICO', 'DIAGNOSTICO_CONCLUIDO', "
+            "'AGUARDANDO_APROVACAO', 'AGUARDANDO_ITENS', 'APROVADA', "
+            "'EM_EXECUCAO', 'FINALIZADA', 'ENTREGUE', 'ENCERRADA')",
+            name="ck_ordem_status_publico",
+        ),
     )
     op.create_table(
         "ordem_servico_servico",
@@ -101,6 +107,17 @@ def upgrade() -> None:
         sa.Column("tempo_executado_minutos", sa.Integer()),
         sa.Column("observacao", sa.Text()),
         sa.Column("cancelado", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.CheckConstraint(
+            "valor_unitario >= 0", name="ck_os_servico_valor_nao_negativo"
+        ),
+        sa.CheckConstraint(
+            "tempo_estimado_minutos > 0",
+            name="ck_os_servico_tempo_estimado_positivo",
+        ),
+        sa.CheckConstraint(
+            "tempo_executado_minutos IS NULL OR tempo_executado_minutos > 0",
+            name="ck_os_servico_tempo_executado_positivo",
+        ),
     )
     op.create_index("ix_os_servico_catalogo", "ordem_servico_servico", ["servico_id"])
     op.create_table(
@@ -113,6 +130,16 @@ def upgrade() -> None:
         sa.Column("quantidade", sa.Integer(), nullable=False),
         sa.Column("valor_unitario", sa.Numeric(10, 2), nullable=False),
         sa.Column("status", sa.String(20), nullable=False),
+        sa.CheckConstraint(
+            "quantidade > 0", name="ck_os_item_quantidade_positiva"
+        ),
+        sa.CheckConstraint(
+            "valor_unitario >= 0", name="ck_os_item_valor_nao_negativo"
+        ),
+        sa.CheckConstraint(
+            "status IN ('A_RECEBER', 'RESERVADO', 'EM_USO', 'CONSUMIDO', 'CANCELADO')",
+            name="ck_os_item_status_operacional",
+        ),
     )
     op.create_index("ix_os_item_estoque", "ordem_servico_item", ["item_estoque_id"])
     op.create_table(
@@ -128,6 +155,12 @@ def upgrade() -> None:
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("published_at", sa.DateTime(timezone=True)),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
+        sa.CheckConstraint(
+            "event_version > 0", name="ck_outbox_event_version_positiva"
+        ),
+        sa.CheckConstraint(
+            "attempts >= 0", name="ck_outbox_attempts_nao_negativo"
+        ),
     )
     op.create_index("ix_outbox_pending", "outbox_message", ["published_at"])
 

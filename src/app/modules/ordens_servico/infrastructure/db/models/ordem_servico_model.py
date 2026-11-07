@@ -13,6 +13,14 @@ class OrdemServicoModel(SQLModel, table=True):
     """Modelo ORM da tabela de Ordens de Serviço."""
 
     __tablename__ = "ordem_servico"
+    __table_args__ = (
+        sa.CheckConstraint(
+            "status IN ('RECEBIDA', 'EM_DIAGNOSTICO', 'DIAGNOSTICO_CONCLUIDO', "
+            "'AGUARDANDO_APROVACAO', 'AGUARDANDO_ITENS', 'APROVADA', "
+            "'EM_EXECUCAO', 'FINALIZADA', 'ENTREGUE', 'ENCERRADA')",
+            name="ck_ordem_status_publico",
+        ),
+    )
 
     id: UUID = Field(primary_key=True)
     cliente_id: UUID = Field(

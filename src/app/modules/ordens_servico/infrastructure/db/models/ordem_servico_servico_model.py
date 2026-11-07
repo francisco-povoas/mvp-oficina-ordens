@@ -12,6 +12,17 @@ class OrdemServicoServicoModel(SQLModel, table=True):
     """Modelo ORM do vínculo de serviço em uma Ordem de Serviço."""
 
     __tablename__ = "ordem_servico_servico"
+    __table_args__ = (
+        sa.CheckConstraint("valor_unitario >= 0", name="ck_os_servico_valor_nao_negativo"),
+        sa.CheckConstraint(
+            "tempo_estimado_minutos > 0",
+            name="ck_os_servico_tempo_estimado_positivo",
+        ),
+        sa.CheckConstraint(
+            "tempo_executado_minutos IS NULL OR tempo_executado_minutos > 0",
+            name="ck_os_servico_tempo_executado_positivo",
+        ),
+    )
 
     id: UUID = Field(primary_key=True)
     ordem_servico_id: UUID = Field(

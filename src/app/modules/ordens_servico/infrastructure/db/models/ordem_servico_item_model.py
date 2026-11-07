@@ -11,6 +11,14 @@ class OrdemServicoItemModel(SQLModel, table=True):
     """Modelo ORM do vínculo de item de estoque em uma Ordem de Serviço."""
 
     __tablename__ = "ordem_servico_item"
+    __table_args__ = (
+        sa.CheckConstraint("quantidade > 0", name="ck_os_item_quantidade_positiva"),
+        sa.CheckConstraint("valor_unitario >= 0", name="ck_os_item_valor_nao_negativo"),
+        sa.CheckConstraint(
+            "status IN ('A_RECEBER', 'RESERVADO', 'EM_USO', 'CONSUMIDO', 'CANCELADO')",
+            name="ck_os_item_status_operacional",
+        ),
+    )
 
     id: UUID = Field(primary_key=True)
     ordem_servico_id: UUID = Field(

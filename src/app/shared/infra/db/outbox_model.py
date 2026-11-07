@@ -9,6 +9,10 @@ from sqlmodel import Field, SQLModel
 
 class OutboxMessageModel(SQLModel, table=True):
     __tablename__ = "outbox_message"
+    __table_args__ = (
+        sa.CheckConstraint("event_version > 0", name="ck_outbox_event_version_positiva"),
+        sa.CheckConstraint("attempts >= 0", name="ck_outbox_attempts_nao_negativo"),
+    )
 
     id: UUID = Field(primary_key=True)
     aggregate_type: str = Field(sa_column=sa.Column(sa.String(80), nullable=False))
