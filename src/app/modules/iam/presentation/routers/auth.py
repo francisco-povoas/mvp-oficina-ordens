@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.modules.iam.application.dtos.auth import TokenResponse
 from app.modules.iam.application.dtos.usuario import UsuarioResponseWithPerfis
@@ -39,13 +39,15 @@ async def token(
     usecase: AutenticarUsuario,
     form_data: Oauth2Form,
     token_provider: TokenProvider,
+    request: Request,
 ) -> TokenResponse:
     try:
         usuario = await usecase.execute(form_data.username, form_data.password)
-        token_data = token_provider.create_access_token({
-            "sub": str(usuario.id),
-            "perfis": usuario.perfis          
-            })
+        token_data = token_provider.create_user_token(
+            subject=str(usuario.id),
+            roles=usuario.perfis,
+            audience=request.app.state.settings.jwt_user_audience,
+        )
         return TokenResponse(
             expire=token_data["expire"],
             access_token=token_data["access_token"],
