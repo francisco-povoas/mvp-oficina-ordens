@@ -1,0 +1,29 @@
+services:
+  db-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ordens_test
+      POSTGRES_USER: ordens
+      POSTGRES_PASSWORD: ordens
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ordens -d ordens_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  tests:
+    build:
+      context: .
+      target: test
+    environment:
+      ENVIRONMENT: test
+      LOG_LEVEL: WARNING
+      DATABASE_URL: postgresql+asyncpg://ordens:ordens@db-test:5432/ordens_test
+      JWT_SECRET_KEY: chave-ficticia-exclusiva-para-testes
+      JWT_ALGORITHM: HS256
+    command: pytest --cov=src/app --cov-report=term-missing --cov-report=xml:coverage.xml
+    depends_on:
+      db-test:
+        condition: service_healthy
