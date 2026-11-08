@@ -25,6 +25,13 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                 "outbox_indexes": {
                     index["name"] for index in inspector.get_indexes("outbox_message")
                 },
+                "outbox_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("outbox_message")
+                },
+                "outbox_columns": {
+                    column["name"] for column in inspector.get_columns("outbox_message")
+                },
             }
 
         schema = await connection.run_sync(inspect_schema)
@@ -41,7 +48,7 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ordem_servico_item",
         "outbox_message",
     }
-    assert revision == "20261107_01_ordens"
+    assert revision == "20261108_02_outbox"
     assert schema["tables"] == expected_tables
     assert "ck_ordem_status_publico" in schema["order_checks"]
     assert {
@@ -52,6 +59,21 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
     assert {fk["referred_table"] for fk in schema["item_fks"]} == {"ordem_servico"}
     assert {fk["referred_table"] for fk in schema["service_fks"]} == {"ordem_servico"}
     assert "ix_outbox_pending" in schema["outbox_indexes"]
+    assert "ix_outbox_claimable" in schema["outbox_indexes"]
+    assert {
+        "ck_outbox_claim_completo",
+        "ck_outbox_claim_expiracao_valida",
+        "ck_outbox_falha_com_erro",
+    } <= schema["outbox_checks"]
+    assert {
+        "next_attempt_at",
+        "claim_id",
+        "claimed_by",
+        "claimed_at",
+        "claim_expires_at",
+        "last_error",
+        "last_failed_at",
+    } <= schema["outbox_columns"]
 
 
 async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(
