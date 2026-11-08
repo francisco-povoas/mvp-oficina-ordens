@@ -8,14 +8,15 @@ from uuid import uuid4
 import pytest
 
 from app.integrations.resources import (
-    ItemEstoqueNaoEncontradoError,
-    ServicoNaoEncontradoError,
-)
-from app.integrations.resources import (
-    ItemEstoqueSnapshot as ItemEstoque,
-)
-from app.integrations.resources import (
     ItemType as TipoItemEstoque,
+)
+from app.integrations.resources import (
+    LiberarReservaResult,
+    RecursoSnapshot,
+    ReservaItemStatus,
+    ReservarItemResult,
+    ResourceDependencyUnavailable,
+    ServicoNaoEncontradoError,
 )
 from app.integrations.resources import (
     ServicoSnapshot as Servico,
@@ -111,24 +112,13 @@ def _os_fake(
     )
 
 
-def _item_estoque_fake(
-    disponivel: int = 10,
-    reservada: int = 0,
-) -> ItemEstoque:
-    agora = _agora()
-    return ItemEstoque(
+def _recurso_fake() -> RecursoSnapshot:
+    return RecursoSnapshot(
         id=ID.generate(),
         tipo=TipoItemEstoque.PECA,
         nome="Filtro de óleo",
         descricao="Filtro para motor",
-        codigo="FO-001",
-        quantidade_disponivel=disponivel,
-        quantidade_reservada=reservada,
-        quantidade_minima=2,
         valor_unitario=Decimal("35.00"),
-        ativo=True,
-        criado_em=agora,
-        atualizado_em=agora,
     )
 
 
@@ -206,23 +196,24 @@ def mock_os_repo():
 
 
 @pytest.fixture
-def mock_item_estoque_repo():
-    repo = MagicMock()
-    repo.obter_por_id_com_lock = AsyncMock(return_value=None)
-    repo.atualizar = AsyncMock()
-    return repo
-
-
-@pytest.fixture
-def mock_uow(mock_os_repo, mock_item_estoque_repo):
+def mock_uow(mock_os_repo):
     uow = MagicMock()
     uow.ordem_servico_repo = mock_os_repo
-    uow.item_estoque_repo = mock_item_estoque_repo
     uow.commit = AsyncMock()
     uow.rollback = AsyncMock()
     uow.__aenter__ = AsyncMock(return_value=uow)
     uow.__aexit__ = AsyncMock(return_value=None)
     return uow
+
+
+@pytest.fixture
+def mock_recursos():
+    recursos = MagicMock()
+    recursos.reservar_item = AsyncMock()
+    recursos.liberar_reserva = AsyncMock()
+    recursos.receber_item_pendente = AsyncMock()
+    recursos.consumir_reserva = AsyncMock()
+    return recursos
 
 
 @pytest.fixture
@@ -405,6 +396,7 @@ class TestIniciarDiagnosticoUseCase:
 
         assert resultado.status == StatusOrdemServico.EM_DIAGNOSTICO.value
         mock_uow.ordem_servico_repo.atualizar.assert_called_once()
+        assert mock_uow.ordem_servico_repo.atualizar.call_args.args[0].version == 2
 
     async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
         uc = IniciarDiagnosticoOrdemServicoUseCase(uow=mock_uow)
@@ -435,6 +427,7 @@ class TestRegistrarDiagnosticoUseCase:
 
         assert resultado.diagnostico == "Desgaste nas pastilhas"
         mock_uow.ordem_servico_repo.atualizar.assert_called_once()
+        assert mock_uow.ordem_servico_repo.atualizar.call_args.args[0].version == 2
 
     async def test_diagnostico_vazio_levanta_erro(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
@@ -485,6 +478,7 @@ class TestAdicionarServicoNaOrdemServicoUseCase:
         assert resultado.nome_servico == servico.nome
         assert resultado.cancelado is False
         mock_uow.ordem_servico_repo.salvar_servico.assert_called_once()
+        assert mock_uow.ordem_servico_repo.atualizar.call_args.args[0].version == 2
 
     async def test_servico_nao_encontrado_levanta_erro(self, mock_uow, mock_servico_repo):
         uc = AdicionarServicoNaOrdemServicoUseCase(uow=mock_uow, servico_repo=mock_servico_repo)
@@ -557,6 +551,7 @@ class TestRemoverServicoDaOrdemServicoUseCase:
         # Verifica que foi marcado como cancelado
         args = mock_uow.ordem_servico_repo.atualizar_servico.call_args[0][0]
         assert args.cancelado is True
+        assert mock_uow.ordem_servico_repo.atualizar.call_args.args[0].version == 2
 
     async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
         uc = RemoverServicoDaOrdemServicoUseCase(uow=mock_uow)
@@ -607,56 +602,71 @@ class TestRemoverServicoDaOrdemServicoUseCase:
 # ---------------------------------------------------------------------------
 
 class TestAdicionarItemNaOrdemServicoUseCase:
-    async def test_adiciona_item_reservado_quando_ha_estoque(self, mock_uow):
+    async def test_consolida_reserva_decidida_por_recursos(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        item = _item_estoque_fake(disponivel=10)
+        recurso = _recurso_fake()
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.item_estoque_repo.obter_por_id_com_lock = AsyncMock(return_value=item)
+        mock_recursos.reservar_item.side_effect = lambda command: ReservarItemResult(
+            operation_id=command.operation_id,
+            recurso_id=command.recurso_id,
+            quantidade=command.quantidade,
+            status=ReservaItemStatus.RESERVADO,
+            recurso=recurso,
+            reservation_id=uuid4(),
+        )
 
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
-        dto = AdicionarItemNaOSRequest(item_estoque_id=str(item.id), quantidade=3)
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
+        dto = AdicionarItemNaOSRequest(item_estoque_id=str(recurso.id), quantidade=3)
         resultado = await uc.execute(str(os.id), dto)
 
         assert resultado.status == StatusItemNaOS.RESERVADO.value
         assert resultado.quantidade == 3
-        mock_uow.item_estoque_repo.atualizar.assert_called_once()
+        mock_recursos.reservar_item.assert_awaited_once()
+        mock_uow.ordem_servico_repo.salvar_item.assert_awaited_once()
+        ordem_atualizada = mock_uow.ordem_servico_repo.atualizar.await_args.args[0]
+        assert ordem_atualizada.version == os.version + 1
 
-    async def test_adiciona_item_a_receber_quando_sem_estoque(self, mock_uow):
+    async def test_consolida_backorder_decidido_por_recursos(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        item = _item_estoque_fake(disponivel=0)
+        recurso = _recurso_fake()
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.item_estoque_repo.obter_por_id_com_lock = AsyncMock(return_value=item)
+        mock_recursos.reservar_item.side_effect = lambda command: ReservarItemResult(
+            operation_id=command.operation_id,
+            recurso_id=command.recurso_id,
+            quantidade=command.quantidade,
+            status=ReservaItemStatus.A_RECEBER,
+            recurso=recurso,
+        )
 
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
-        dto = AdicionarItemNaOSRequest(item_estoque_id=str(item.id), quantidade=3)
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
+        dto = AdicionarItemNaOSRequest(item_estoque_id=str(recurso.id), quantidade=3)
         resultado = await uc.execute(str(os.id), dto)
 
         assert resultado.status == StatusItemNaOS.A_RECEBER.value
-        # Não deve ter alterado o estoque
-        mock_uow.item_estoque_repo.atualizar.assert_not_called()
 
-    async def test_quantidade_zero_levanta_erro(self, mock_uow):
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
+    async def test_quantidade_zero_levanta_erro(self, mock_uow, mock_recursos):
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=0)
         with pytest.raises(OrdemServicoInvalidaError):
             await uc.execute(str(uuid4()), dto)
+        mock_recursos.reservar_item.assert_not_awaited()
 
-    async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
+    async def test_os_nao_encontrada_levanta_erro(self, mock_uow, mock_recursos):
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
         with pytest.raises(OrdemServicoNaoEncontradaError):
             await uc.execute(str(uuid4()), dto)
 
-    async def test_os_status_errado_levanta_erro(self, mock_uow):
+    async def test_os_status_errado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.RECEBIDA)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
 
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
         with pytest.raises(OrdemServicoTransicaoInvalidaError):
             await uc.execute(str(os.id), dto)
 
-    async def test_item_duplicado_levanta_erro(self, mock_uow):
+    async def test_item_duplicado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         existente = _os_item_fake()
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
@@ -664,34 +674,25 @@ class TestAdicionarItemNaOrdemServicoUseCase:
             return_value=existente
         )
 
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
         with pytest.raises(ItemJaAdicionadoNaOrdemServicoError):
             await uc.execute(str(os.id), dto)
 
-    async def test_item_estoque_nao_encontrado_levanta_erro(self, mock_uow):
+    async def test_indisponibilidade_nao_cria_item_local(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        # item_estoque_repo retorna None (padrão da fixture)
+        mock_uow.ordem_servico_repo.obter_por_id.return_value = os
+        mock_recursos.reservar_item.side_effect = ResourceDependencyUnavailable("Etapa 2")
+        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
 
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
-        dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
-        with pytest.raises(ItemEstoqueNaoEncontradoError):
-            await uc.execute(str(os.id), dto)
+        with pytest.raises(ResourceDependencyUnavailable):
+            await uc.execute(
+                str(os.id),
+                AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1),
+            )
 
-    async def test_reserva_subtrai_disponivel_e_soma_reservada(self, mock_uow):
-        os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        item = _item_estoque_fake(disponivel=5, reservada=2)
-        mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.item_estoque_repo.obter_por_id_com_lock = AsyncMock(return_value=item)
-
-        uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow)
-        dto = AdicionarItemNaOSRequest(item_estoque_id=str(item.id), quantidade=3)
-        await uc.execute(str(os.id), dto)
-
-        item_atualizado = mock_uow.item_estoque_repo.atualizar.call_args[0][0]
-        assert item_atualizado.quantidade_disponivel == 2   # 5 - 3
-        assert item_atualizado.quantidade_reservada == 5    # 2 + 3
+        mock_uow.ordem_servico_repo.salvar_item.assert_not_awaited()
+        mock_uow.ordem_servico_repo.atualizar.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -699,98 +700,88 @@ class TestAdicionarItemNaOrdemServicoUseCase:
 # ---------------------------------------------------------------------------
 
 class TestRemoverItemDaOrdemServicoUseCase:
-    async def test_remove_item_reservado_devolve_estoque(self, mock_uow):
-        import uuid as _uuid
+    async def test_remove_reservado_somente_apos_resultado_de_liberacao(
+        self, mock_uow, mock_recursos
+    ):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        osi = OrdemServicoItem(
-            id=ID.generate(),
-            ordem_servico_id=_uuid.UUID(str(os.id)),
-            item_estoque_id=uuid4(),
-            nome_item="Filtro",
-            tipo_item="PECA",
-            quantidade=2,
-            valor_unitario=Decimal("35.00"),
-            status=StatusItemNaOS.RESERVADO,
-        )
-        item = _item_estoque_fake(disponivel=3, reservada=2)
+        osi = _os_item_fake(str(os.id), status=StatusItemNaOS.RESERVADO)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
         mock_uow.ordem_servico_repo.obter_item_por_id = AsyncMock(return_value=osi)
-        mock_uow.item_estoque_repo.obter_por_id_com_lock = AsyncMock(return_value=item)
+        mock_recursos.liberar_reserva.side_effect = lambda command: LiberarReservaResult(
+            operation_id=command.operation_id,
+            recurso_id=command.recurso_id,
+            quantidade=command.quantidade,
+            reservation_id=uuid4(),
+            liberado_em=_agora(),
+        )
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         await uc.execute(str(os.id), str(osi.id))
 
-        mock_uow.item_estoque_repo.atualizar.assert_called_once()
-        item_atualizado = mock_uow.item_estoque_repo.atualizar.call_args[0][0]
-        assert item_atualizado.quantidade_disponivel == 5   # 3 + 2
-        assert item_atualizado.quantidade_reservada == 0    # 2 - 2
-
+        mock_recursos.liberar_reserva.assert_awaited_once()
         mock_uow.ordem_servico_repo.atualizar_item.assert_called_once()
         osi_cancelado = mock_uow.ordem_servico_repo.atualizar_item.call_args[0][0]
         assert osi_cancelado.status == StatusItemNaOS.CANCELADO
 
-    async def test_remove_item_a_receber_nao_altera_estoque(self, mock_uow):
-        import uuid as _uuid
+    async def test_remove_item_a_receber_sem_operacao_fisica(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        osi = OrdemServicoItem(
-            id=ID.generate(),
-            ordem_servico_id=_uuid.UUID(str(os.id)),
-            item_estoque_id=uuid4(),
-            nome_item="Filtro",
-            tipo_item="PECA",
-            quantidade=2,
-            valor_unitario=Decimal("35.00"),
-            status=StatusItemNaOS.A_RECEBER,
-        )
+        osi = _os_item_fake(str(os.id), status=StatusItemNaOS.A_RECEBER)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
         mock_uow.ordem_servico_repo.obter_item_por_id = AsyncMock(return_value=osi)
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         await uc.execute(str(os.id), str(osi.id))
 
-        mock_uow.item_estoque_repo.atualizar.assert_not_called()
+        mock_recursos.liberar_reserva.assert_not_awaited()
         mock_uow.ordem_servico_repo.atualizar_item.assert_called_once()
 
-    async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
+    async def test_os_nao_encontrada_levanta_erro(self, mock_uow, mock_recursos):
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         with pytest.raises(OrdemServicoNaoEncontradaError):
             await uc.execute(str(uuid4()), str(uuid4()))
 
-    async def test_os_status_errado_levanta_erro(self, mock_uow):
+    async def test_os_status_errado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.RECEBIDA)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         with pytest.raises(OrdemServicoTransicaoInvalidaError):
             await uc.execute(str(os.id), str(uuid4()))
 
-    async def test_item_nao_encontrado_levanta_erro(self, mock_uow):
+    async def test_item_nao_encontrado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         with pytest.raises(OrdemServicoItemNaoEncontradoError):
             await uc.execute(str(os.id), str(uuid4()))
 
-    async def test_item_ja_cancelado_levanta_erro(self, mock_uow):
-        import uuid as _uuid
+    async def test_item_ja_cancelado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
-        osi = OrdemServicoItem(
-            id=ID.generate(),
-            ordem_servico_id=_uuid.UUID(str(os.id)),
-            item_estoque_id=uuid4(),
-            nome_item="Filtro",
-            tipo_item="PECA",
-            quantidade=1,
-            valor_unitario=Decimal("35.00"),
-            status=StatusItemNaOS.CANCELADO,
-        )
+        osi = _os_item_fake(str(os.id), status=StatusItemNaOS.CANCELADO)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
         mock_uow.ordem_servico_repo.obter_item_por_id = AsyncMock(return_value=osi)
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         with pytest.raises(OrdemServicoInvalidaError):
             await uc.execute(str(os.id), str(osi.id))
+
+    async def test_indisponibilidade_nao_cancela_reserva_local(
+        self, mock_uow, mock_recursos
+    ):
+        os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
+        osi = _os_item_fake(str(os.id), status=StatusItemNaOS.RESERVADO)
+        mock_uow.ordem_servico_repo.obter_por_id.return_value = os
+        mock_uow.ordem_servico_repo.obter_item_por_id.return_value = osi
+        mock_recursos.liberar_reserva.side_effect = ResourceDependencyUnavailable("Etapa 2")
+
+        with pytest.raises(ResourceDependencyUnavailable):
+            await RemoverItemDaOrdemServicoUseCase(
+                uow=mock_uow, recursos=mock_recursos
+            ).execute(str(os.id), str(osi.id))
+
+        mock_uow.ordem_servico_repo.atualizar_item.assert_not_awaited()
+        mock_uow.ordem_servico_repo.atualizar.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -815,6 +806,7 @@ class TestConcluirDiagnosticoUseCase:
         assert resultado.status == StatusOrdemServico.DIAGNOSTICO_CONCLUIDO.value
         assert resultado.diagnostico_concluido_em is not None
         mock_uow.ordem_servico_repo.atualizar.assert_called_once()
+        assert mock_uow.ordem_servico_repo.atualizar.call_args.args[0].version == 2
 
     async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
         uc = ConcluirDiagnosticoOrdemServicoUseCase(uow=mock_uow)

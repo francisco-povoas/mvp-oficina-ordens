@@ -2,15 +2,13 @@
 
 from typing import Protocol
 
-from app.integrations.resources import ItemEstoquePort
 from app.modules.ordens_servico.domain.ports.ordem_servico_repo import OrdemServicoRepo
 
 
 class OrdemServicoUnitOfWork(Protocol):
-    """Agrupa OS repo e ItemEstoque repo na mesma transação."""
+    """Agrupa somente persistência pertencente ao serviço de Ordens."""
 
     ordem_servico_repo: OrdemServicoRepo
-    item_estoque_repo: ItemEstoquePort
 
     async def __aenter__(self): ...
     async def __aexit__(self, exc_type, exc_val, exc_tb): ...

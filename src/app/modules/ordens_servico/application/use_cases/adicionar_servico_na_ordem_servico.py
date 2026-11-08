@@ -77,6 +77,7 @@ class AdicionarServicoNaOrdemServicoUseCase:
             )
 
             await self.uow.ordem_servico_repo.salvar_servico(os_servico)
+            await self.uow.ordem_servico_repo.atualizar(os.registrar_alteracao())
             logger.info(
                 f"Serviço '{dto.servico_id}' adicionado à OS '{ordem_servico_id}'"
             )

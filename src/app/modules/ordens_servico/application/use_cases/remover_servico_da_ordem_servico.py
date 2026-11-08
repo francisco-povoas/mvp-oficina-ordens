@@ -69,6 +69,7 @@ class RemoverServicoDaOrdemServicoUseCase:
             )
 
             await self.uow.ordem_servico_repo.atualizar_servico(os_servico_cancelado)
+            await self.uow.ordem_servico_repo.atualizar(os.registrar_alteracao())
             logger.info(
                 f"Serviço '{ordem_servico_servico_id}' cancelado da OS '{ordem_servico_id}'"
             )

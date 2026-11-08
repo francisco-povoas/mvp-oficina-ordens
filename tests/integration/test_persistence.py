@@ -18,6 +18,15 @@ from app.modules.clientes.infrastructure.db.uow.cliente_uow import ClienteUnitOf
 from app.modules.iam.domain.entities.usuario import Usuario, UsuarioPerfil
 from app.modules.iam.infrastructure.db.models.perfil import PerfilModel
 from app.modules.iam.infrastructure.db.repositories.usuario_repo import UsuarioRepo
+from app.modules.ordens_servico.application.dtos.ordem_servico import (
+    RegistrarDiagnosticoRequest,
+)
+from app.modules.ordens_servico.application.use_cases.iniciar_diagnostico import (
+    IniciarDiagnosticoOrdemServicoUseCase,
+)
+from app.modules.ordens_servico.application.use_cases.registrar_diagnostico import (
+    RegistrarDiagnosticoOrdemServicoUseCase,
+)
 from app.modules.ordens_servico.domain.entities.ordem_servico import (
     OrdemServico,
     StatusOrdemServico,
@@ -27,11 +36,17 @@ from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
     StatusItemNaOS,
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico_servico import OrdemServicoServico
+from app.modules.ordens_servico.domain.exceptions import (
+    OrdemServicoConflitoDeVersaoError,
+)
 from app.modules.ordens_servico.infrastructure.db.models.ordem_servico_item_model import (
     OrdemServicoItemModel,
 )
 from app.modules.ordens_servico.infrastructure.db.repositories.ordem_servico_repo import (
     OrdemServicoRepo,
+)
+from app.modules.ordens_servico.infrastructure.db.uow.ordem_servico_uow import (
+    OrdemServicoUnitOfWork,
 )
 from app.modules.veiculos.domain.entities.veiculo import Veiculo
 from app.modules.veiculos.domain.value_objects.placa import Placa
@@ -297,6 +312,69 @@ async def test_unit_of_work_faz_rollback_integral(db_engine: AsyncEngine) -> Non
 
     async with factory() as session:
         assert await ClienteRepo(session).obter_por_id(cliente.id) is None
+
+
+async def test_use_cases_preservam_metadados_e_avancam_versao_monotonicamente(
+    db_engine: AsyncEngine,
+) -> None:
+    factory = _factory(db_engine)
+    async with factory() as session:
+        _, _, ordem = await _persistir_cliente_veiculo_os(
+            session, status=StatusOrdemServico.RECEBIDA
+        )
+        await session.commit()
+
+    await IniciarDiagnosticoOrdemServicoUseCase(
+        uow=OrdemServicoUnitOfWork(factory())
+    ).execute(str(ordem.id))
+    await RegistrarDiagnosticoOrdemServicoUseCase(
+        uow=OrdemServicoUnitOfWork(factory())
+    ).execute(
+        str(ordem.id),
+        RegistrarDiagnosticoRequest(diagnostico="Diagnóstico persistido"),
+    )
+
+    async with factory() as session:
+        recuperada = await OrdemServicoRepo(session).obter_por_id(ordem.id)
+
+    assert recuperada is not None
+    assert recuperada.version == 3
+    assert recuperada.status == StatusOrdemServico.EM_DIAGNOSTICO
+    assert recuperada.diagnostico == "Diagnóstico persistido"
+    assert recuperada.cliente_id == ordem.cliente_id
+    assert recuperada.veiculo_id == ordem.veiculo_id
+
+
+async def test_controle_otimista_rejeita_lost_update_concorrente(
+    db_engine: AsyncEngine,
+) -> None:
+    factory = _factory(db_engine)
+    async with factory() as session:
+        _, _, ordem = await _persistir_cliente_veiculo_os(
+            session, status=StatusOrdemServico.EM_DIAGNOSTICO
+        )
+        await session.commit()
+
+    async with factory() as session_a, factory() as session_b:
+        repo_a = OrdemServicoRepo(session_a)
+        repo_b = OrdemServicoRepo(session_b)
+        ordem_a = await repo_a.obter_por_id(ordem.id)
+        ordem_b = await repo_b.obter_por_id(ordem.id)
+        assert ordem_a is not None and ordem_b is not None
+
+        await repo_a.atualizar(ordem_a.registrar_diagnostico("Diagnóstico A"))
+        await session_a.commit()
+
+        with pytest.raises(OrdemServicoConflitoDeVersaoError):
+            await repo_b.atualizar(ordem_b.registrar_diagnostico("Diagnóstico B"))
+        await session_b.rollback()
+
+    async with factory() as session:
+        recuperada = await OrdemServicoRepo(session).obter_por_id(ordem.id)
+
+    assert recuperada is not None
+    assert recuperada.version == 2
+    assert recuperada.diagnostico == "Diagnóstico A"
 
 
 async def test_isolamento_inicia_cada_teste_sem_dados(db_session: AsyncSession) -> None:

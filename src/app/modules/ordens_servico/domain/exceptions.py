@@ -18,6 +18,12 @@ class OrdemServicoTransicaoInvalidaError(DomainException):
     pass
 
 
+class OrdemServicoConflitoDeVersaoError(DomainException):
+    """Lançada quando outra transação alterou a mesma OS primeiro."""
+
+    pass
+
+
 class OrdemServicoServicoNaoEncontradoError(DomainException):
     """Lançada quando o vínculo de serviço na OS não é encontrado."""
     pass

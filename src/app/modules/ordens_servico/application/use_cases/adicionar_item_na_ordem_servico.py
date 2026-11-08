@@ -1,10 +1,14 @@
-"""Use case: Adicionar Item de Estoque a uma Ordem de Serviço."""
+"""Use case: adicionar item à OS após decisão autoritativa de Recursos."""
 
 from dataclasses import dataclass
-from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from app.integrations.resources import ItemEstoqueNaoEncontradoError, ItemEstoqueSnapshot
+from app.integrations.resources import (
+    ItemEstoqueNaoEncontradoError,
+    RecursosOperacoesPort,
+    ReservaItemStatus,
+    ReservarItemCommand,
+)
 from app.logger import setup_logger
 from app.modules.ordens_servico.application.dtos.ordem_servico import (
     AdicionarItemNaOSRequest,
@@ -30,6 +34,7 @@ logger = setup_logger(__name__)
 @dataclass(frozen=True)
 class AdicionarItemNaOrdemServicoUseCase:
     uow: OrdemServicoUnitOfWork
+    recursos: RecursosOperacoesPort
 
     async def execute(
         self, ordem_servico_id: str, dto: AdicionarItemNaOSRequest
@@ -38,81 +43,71 @@ class AdicionarItemNaOrdemServicoUseCase:
             raise OrdemServicoInvalidaError("A quantidade deve ser maior que zero.")
 
         os_id = ID.from_string(ordem_servico_id)
-        item_id = ID.from_string(dto.item_estoque_id)
+        recurso_id = ID.from_string(dto.item_estoque_id)
 
         async with self.uow:
-            os = await self.uow.ordem_servico_repo.obter_por_id(os_id)
-            if not os:
+            ordem = await self.uow.ordem_servico_repo.obter_por_id(os_id)
+            if not ordem:
                 raise OrdemServicoNaoEncontradaError(
                     f"OS com ID {ordem_servico_id} não encontrada."
                 )
-
-            if os.status != StatusOrdemServico.EM_DIAGNOSTICO:
+            if ordem.status != StatusOrdemServico.EM_DIAGNOSTICO:
                 raise OrdemServicoTransicaoInvalidaError(
-                    f"Só é possível adicionar itens em OS com status "
-                    f"'EM_DIAGNOSTICO'. Status atual: '{os.status.value}'."
+                    "Só é possível adicionar itens em OS com status "
+                    f"'EM_DIAGNOSTICO'. Status atual: '{ordem.status.value}'."
                 )
 
-            # Verificar duplicidade ativa — antes de qualquer alteração no estoque
             existente = await self.uow.ordem_servico_repo.obter_item_ativo_por_item_estoque_id(
-                os_id, item_id
+                os_id, recurso_id
             )
             if existente:
                 raise ItemJaAdicionadoNaOrdemServicoError(
                     "Item já foi adicionado a esta ordem de serviço."
                 )
 
-            # Busca com lock pessimista para evitar condição de corrida
-            item_estoque = await self.uow.item_estoque_repo.obter_por_id_com_lock(item_id)
-            if not item_estoque:
+            ordem_item_id = ID.generate()
+            command = ReservarItemCommand(
+                operation_id=uuid4(),
+                ordem_servico_id=ordem.id.value,
+                ordem_servico_item_id=ordem_item_id.value,
+                recurso_id=recurso_id.value,
+                quantidade=dto.quantidade,
+            )
+            resultado = await self.recursos.reservar_item(command)
+            if (
+                resultado.operation_id != command.operation_id
+                or resultado.recurso_id != command.recurso_id
+                or resultado.recurso.id != recurso_id
+                or resultado.quantidade != command.quantidade
+            ):
                 raise ItemEstoqueNaoEncontradoError(
-                    f"Item de estoque com ID {dto.item_estoque_id} não encontrado."
+                    "Recursos devolveu resultado incompatível com a reserva solicitada."
                 )
 
-            # Tentar reservar quantidade
-            if item_estoque.quantidade_disponivel >= dto.quantidade:
-                # Há saldo suficiente — reservar imediatamente
-                from datetime import UTC, datetime
-
-                item_atualizado = ItemEstoqueSnapshot(
-                    id=item_estoque.id,
-                    tipo=item_estoque.tipo,
-                    nome=item_estoque.nome,
-                    descricao=item_estoque.descricao,
-                    codigo=item_estoque.codigo,
-                    quantidade_disponivel=item_estoque.quantidade_disponivel - dto.quantidade,
-                    quantidade_reservada=item_estoque.quantidade_reservada + dto.quantidade,
-                    quantidade_minima=item_estoque.quantidade_minima,
-                    valor_unitario=item_estoque.valor_unitario,
-                    ativo=item_estoque.ativo,
-                    criado_em=item_estoque.criado_em,
-                    atualizado_em=datetime.now(UTC),
-                )
-                await self.uow.item_estoque_repo.atualizar(item_atualizado)
-                status_item = StatusItemNaOS.RESERVADO
-                logger.info(
-                    f"Item '{dto.item_estoque_id}' reservado ({dto.quantidade} un.) para OS '{ordem_servico_id}'"
-                )
-            else:
-                # Sem saldo suficiente — marcar como A_RECEBER sem alterar estoque
-                status_item = StatusItemNaOS.A_RECEBER
-                logger.info(
-                    f"Item '{dto.item_estoque_id}' marcado como A_RECEBER na OS '{ordem_servico_id}' "
-                    f"(disponível: {item_estoque.quantidade_disponivel}, solicitado: {dto.quantidade})"
-                )
-
+            status_item = (
+                StatusItemNaOS.RESERVADO
+                if resultado.status == ReservaItemStatus.RESERVADO
+                else StatusItemNaOS.A_RECEBER
+            )
             os_item = OrdemServicoItem(
-                id=ID.generate(),
+                id=ordem_item_id,
                 ordem_servico_id=UUID(ordem_servico_id),
                 item_estoque_id=UUID(dto.item_estoque_id),
-                nome_item=item_estoque.nome,
-                tipo_item=item_estoque.tipo.value,
+                nome_item=resultado.recurso.nome,
+                tipo_item=resultado.recurso.tipo.value,
                 quantidade=dto.quantidade,
-                valor_unitario=Decimal(str(item_estoque.valor_unitario)),
+                valor_unitario=resultado.recurso.valor_unitario,
                 status=status_item,
             )
 
             await self.uow.ordem_servico_repo.salvar_item(os_item)
+            await self.uow.ordem_servico_repo.atualizar(ordem.registrar_alteracao())
+            logger.info(
+                "Resultado de Recursos consolidado para item '%s' na OS '%s': %s",
+                dto.item_estoque_id,
+                ordem_servico_id,
+                status_item.value,
+            )
 
         return OrdemServicoItemResponse(
             id=str(os_item.id),

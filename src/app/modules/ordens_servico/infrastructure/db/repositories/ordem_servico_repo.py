@@ -16,6 +16,9 @@ from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
     StatusItemNaOS,
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico_servico import OrdemServicoServico
+from app.modules.ordens_servico.domain.exceptions import (
+    OrdemServicoConflitoDeVersaoError,
+)
 from app.modules.ordens_servico.domain.filters.ordem_servico import ListarOrdensServicoFiltro
 from app.modules.ordens_servico.infrastructure.db.models.ordem_servico_item_model import (
     OrdemServicoItemModel,
@@ -68,22 +71,43 @@ class OrdemServicoRepo:
         return self._os_to_entity(model)
 
     async def atualizar(self, os: OrdemServico) -> Optional[OrdemServico]:
-        model = await self.session.get(OrdemServicoModel, os.id.value)
-        if not model:
-            return None
-        model.status = os.status.value
-        model.queixa_inicial = os.queixa_inicial
-        model.diagnostico = os.diagnostico
-        model.atualizado_em = os.atualizado_em
-        model.iniciado_diagnostico_em = os.iniciado_diagnostico_em
-        model.diagnostico_concluido_em = os.diagnostico_concluido_em
-        model.version = os.version
-        model.payment_id = os.payment_id
-        model.payment_status = os.payment_status
-        model.payment_amount = os.payment_amount
-        model.payment_confirmed_at = os.payment_confirmed_at
-        model.payment_quote_version = os.payment_quote_version
-        self.session.add(model)
+        versao_anterior = os.version - 1
+        if versao_anterior < 1:
+            raise OrdemServicoConflitoDeVersaoError(
+                "Atualização da OS deve avançar exatamente uma versão."
+            )
+
+        statement = (
+            sa.update(OrdemServicoModel)
+            .where(
+                OrdemServicoModel.id == os.id.value,
+                OrdemServicoModel.version == versao_anterior,
+            )
+            .values(
+                status=os.status.value,
+                queixa_inicial=os.queixa_inicial,
+                diagnostico=os.diagnostico,
+                atualizado_em=os.atualizado_em,
+                iniciado_diagnostico_em=os.iniciado_diagnostico_em,
+                diagnostico_concluido_em=os.diagnostico_concluido_em,
+                version=os.version,
+                payment_id=os.payment_id,
+                payment_status=os.payment_status,
+                payment_amount=os.payment_amount,
+                payment_confirmed_at=os.payment_confirmed_at,
+                payment_quote_version=os.payment_quote_version,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.exec(statement)
+        if result.rowcount != 1:
+            existente = await self.session.get(OrdemServicoModel, os.id.value)
+            if existente is None:
+                return None
+            raise OrdemServicoConflitoDeVersaoError(
+                f"Conflito de versão ao atualizar OS '{os.id}'. "
+                f"Esperada: {versao_anterior}; atual: {existente.version}."
+            )
         return os
 
     async def listar(self, filtros: ListarOrdensServicoFiltro) -> list[OrdemServico]:

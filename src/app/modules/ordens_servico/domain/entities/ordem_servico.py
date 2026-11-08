@@ -108,6 +108,78 @@ class OrdemServico:
                 f"para '{novo_status.value}'."
             )
 
+    def registrar_alteracao(self) -> "OrdemServico":
+        """Avança os metadados do agregado após alteração em um filho local."""
+
+        return replace(
+            self,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+        )
+
+    def iniciar_diagnostico(self) -> "OrdemServico":
+        self.validar_transicao(StatusOrdemServico.EM_DIAGNOSTICO)
+        agora = datetime.now(UTC)
+        return replace(
+            self,
+            status=StatusOrdemServico.EM_DIAGNOSTICO,
+            atualizado_em=agora,
+            iniciado_diagnostico_em=agora,
+            version=self.version + 1,
+        )
+
+    def registrar_diagnostico(self, diagnostico: str) -> "OrdemServico":
+        if self.status != StatusOrdemServico.EM_DIAGNOSTICO:
+            raise OrdemServicoTransicaoInvalidaError(
+                "Só é possível registrar diagnóstico em OS com status "
+                f"'EM_DIAGNOSTICO'. Status atual: '{self.status.value}'."
+            )
+        if not diagnostico or not diagnostico.strip():
+            raise OrdemServicoInvalidaError("O diagnóstico não pode ser vazio.")
+        return replace(
+            self,
+            diagnostico=diagnostico,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+        )
+
+    def concluir_diagnostico(self) -> "OrdemServico":
+        if self.status != StatusOrdemServico.EM_DIAGNOSTICO:
+            raise OrdemServicoTransicaoInvalidaError(
+                "Só é possível concluir diagnóstico de OS com status "
+                f"'EM_DIAGNOSTICO'. Status atual: '{self.status.value}'."
+            )
+        if not self.diagnostico or not self.diagnostico.strip():
+            raise OrdemServicoInvalidaError(
+                "Não é possível concluir o diagnóstico sem registrar o texto do diagnóstico."
+            )
+        agora = datetime.now(UTC)
+        return replace(
+            self,
+            status=StatusOrdemServico.DIAGNOSTICO_CONCLUIDO,
+            atualizado_em=agora,
+            diagnostico_concluido_em=agora,
+            version=self.version + 1,
+        )
+
+    def registrar_recebimento_item(self, *, ainda_tem_item_a_receber: bool) -> "OrdemServico":
+        if self.status != StatusOrdemServico.AGUARDANDO_ITENS:
+            raise OrdemServicoTransicaoInvalidaError(
+                "Só é possível confirmar recebimento de item para OS com status "
+                f"'AGUARDANDO_ITENS'. Status atual: '{self.status.value}'."
+            )
+        novo_status = (
+            StatusOrdemServico.AGUARDANDO_ITENS
+            if ainda_tem_item_a_receber
+            else StatusOrdemServico.APROVADA
+        )
+        return replace(
+            self,
+            status=novo_status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+        )
+
     def iniciar_execucao(
         self,
         itens_ativos_status: list[str],

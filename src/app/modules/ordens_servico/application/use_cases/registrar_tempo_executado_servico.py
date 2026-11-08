@@ -62,6 +62,7 @@ class RegistrarTempoExecutadoServicoUseCase:
 
             # 6. Persistir
             await self.uow.ordem_servico_repo.atualizar_servico(servico_atualizado)
+            await self.uow.ordem_servico_repo.atualizar(os.registrar_alteracao())
 
             # 7. Commit
             await self.uow.commit()

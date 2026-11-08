@@ -5,12 +5,22 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
+
+from app.integrations.resources import (
+    ConsumirReservaResult,
+    ResourceDependencyUnavailable,
+)
 from app.modules.ordens_servico.application.use_cases.entregar_ordem_servico import (
     EntregarOrdemServicoUseCase,
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico import (
     OrdemServico,
     StatusOrdemServico,
+)
+from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
+    OrdemServicoItem,
+    StatusItemNaOS,
 )
 from app.shared.value_objects.id import ID
 
@@ -46,14 +56,87 @@ async def test_entrega_sem_itens_persiste_e_confirma_transacao() -> None:
 
     uow = MagicMock()
     uow.ordem_servico_repo = repo
-    uow.item_estoque_repo = MagicMock()
     uow.commit = AsyncMock()
     uow.__aenter__ = AsyncMock(return_value=uow)
     uow.__aexit__ = AsyncMock(return_value=None)
 
-    resposta = await EntregarOrdemServicoUseCase(uow=uow).execute(str(ordem.id))
+    recursos = MagicMock()
+    resposta = await EntregarOrdemServicoUseCase(
+        uow=uow, recursos=recursos
+    ).execute(str(ordem.id))
 
     assert resposta.status == StatusOrdemServico.ENTREGUE.value
     assert resposta.payment_id == str(ordem.payment_id)
     repo.atualizar.assert_awaited_once()
     uow.commit.assert_awaited_once()
+
+
+def _item_em_uso(ordem: OrdemServico) -> OrdemServicoItem:
+    return OrdemServicoItem(
+        id=ID.generate(),
+        ordem_servico_id=ordem.id.value,
+        item_estoque_id=uuid4(),
+        nome_item="Correia",
+        tipo_item="PECA",
+        quantidade=1,
+        valor_unitario=Decimal("80.00"),
+        status=StatusItemNaOS.EM_USO,
+    )
+
+
+def _uow_entrega(ordem: OrdemServico, item: OrdemServicoItem):
+    repo = MagicMock()
+    repo.obter_por_id = AsyncMock(return_value=ordem)
+    repo.listar_itens_da_os = AsyncMock(return_value=[item])
+    repo.listar_servicos_da_os = AsyncMock(return_value=[])
+    repo.atualizar_item = AsyncMock()
+    repo.atualizar = AsyncMock()
+    uow = MagicMock()
+    uow.ordem_servico_repo = repo
+    uow.commit = AsyncMock()
+    uow.__aenter__ = AsyncMock(return_value=uow)
+    uow.__aexit__ = AsyncMock(return_value=None)
+    return repo, uow
+
+
+async def test_entrega_consolida_consumo_confirmado_por_recursos() -> None:
+    ordem = _ordem_liquidada()
+    item = _item_em_uso(ordem)
+    repo, uow = _uow_entrega(ordem, item)
+    recursos = MagicMock()
+    recursos.consumir_reserva = AsyncMock(
+        side_effect=lambda command: ConsumirReservaResult(
+            operation_id=command.operation_id,
+            recurso_id=command.recurso_id,
+            quantidade=command.quantidade,
+            reservation_id=uuid4(),
+            consumido_em=datetime.now(UTC),
+        )
+    )
+
+    resposta = await EntregarOrdemServicoUseCase(
+        uow=uow, recursos=recursos
+    ).execute(str(ordem.id))
+
+    assert resposta.itens[0].status == StatusItemNaOS.CONSUMIDO.value
+    repo.atualizar_item.assert_awaited_once()
+    assert repo.atualizar.await_args.args[0].version == ordem.version + 1
+
+
+async def test_entrega_nao_marca_consumo_quando_recursos_esta_indisponivel() -> None:
+    ordem = _ordem_liquidada()
+    item = _item_em_uso(ordem)
+    repo, uow = _uow_entrega(ordem, item)
+    recursos = MagicMock()
+    recursos.consumir_reserva = AsyncMock(
+        side_effect=ResourceDependencyUnavailable("Etapa 2")
+    )
+
+    with pytest.raises(ResourceDependencyUnavailable):
+        await EntregarOrdemServicoUseCase(
+            uow=uow, recursos=recursos
+        ).execute(str(ordem.id))
+
+    repo.atualizar_item.assert_not_awaited()
+    repo.atualizar.assert_not_awaited()
+    uow.commit.assert_not_awaited()

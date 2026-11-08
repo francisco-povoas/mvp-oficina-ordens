@@ -82,6 +82,12 @@ _RESPONSES_AUTH = {
     401: {"description": "Token ausente, inválido ou expirado", "model": ErrorResponse},
     403: {"description": "Permissão insuficiente", "model": ErrorResponse},
 }
+_RESPONSE_RECURSOS_INDISPONIVEIS = {
+    503: {
+        "description": "Recursos indisponível; a operação não foi concluída",
+        "model": ErrorResponse,
+    }
+}
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +168,7 @@ async def listar_ordens_servico(
     responses={
         200: {"description": "Estatística retornada com sucesso", "model": EstatisticaTempoExecucaoServicoResponse},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "Serviço não encontrado", "model": ErrorResponse},
         422: {"description": "ID do serviço inválido", "model": ErrorResponse},
     },
@@ -187,6 +194,7 @@ async def obter_estatistica_tempo_execucao_servico(
     responses={
         200: {"description": "Execuções retornadas com sucesso", "model": ListagemExecucoesServicoResponse},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "Serviço não encontrado", "model": ErrorResponse},
         422: {"description": "ID do serviço inválido", "model": ErrorResponse},
     },
@@ -301,6 +309,7 @@ async def registrar_diagnostico(
     responses={
         201: {"description": "Serviço adicionado à OS com sucesso", "model": OrdemServicoServicoResponse},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou Serviço não encontrado", "model": ErrorResponse},
         409: {"description": "Serviço já adicionado à OS", "model": ErrorResponse},
         422: {"description": "Dados inválidos ou status inválido", "model": ErrorResponse},
@@ -366,6 +375,7 @@ async def remover_servico(
     responses={
         201: {"description": "Item adicionado à OS com sucesso", "model": OrdemServicoItemResponse},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou Item de estoque não encontrado", "model": ErrorResponse},
         409: {"description": "Item já adicionado à OS", "model": ErrorResponse},
         422: {"description": "Dados inválidos ou status inválido", "model": ErrorResponse},
@@ -401,6 +411,7 @@ async def adicionar_item(
     responses={
         204: {"description": "Item removido da OS com sucesso"},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou vínculo de item não encontrado", "model": ErrorResponse},
         422: {"description": "Status inválido para a operação", "model": ErrorResponse},
     },
@@ -460,6 +471,7 @@ async def concluir_diagnostico(
     responses={
         200: {"description": "Recebimento de item confirmado com sucesso", "model": OrdemServicoDetalheResponse},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou item não encontrado", "model": ErrorResponse},
         422: {"description": "Status inválido para a operação", "model": ErrorResponse},
     },
@@ -607,6 +619,7 @@ async def finalizar_ordem_servico(
     responses={
         200: {"description": "OS entregue ao cliente com sucesso", "model": OrdemServicoDetalheResponse},
         **_RESPONSES_AUTH,
+        **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou item de estoque não encontrado", "model": ErrorResponse},
         422: {"description": "Status inválido, pagamento não registrado ou inconsistência de itens", "model": ErrorResponse},
     },

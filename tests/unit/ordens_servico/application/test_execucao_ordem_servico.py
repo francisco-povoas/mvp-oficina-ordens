@@ -124,23 +124,9 @@ def mock_os_repo():
 
 
 @pytest.fixture
-def mock_item_estoque_repo():
-    """Fake de estoque que falha se qualquer método for chamado (não deve ser usado na fase 3)."""
-    repo = MagicMock()
-    repo.obter_por_id_com_lock = AsyncMock(side_effect=AssertionError(
-        "item_estoque_repo não deve ser chamado na fase de execução da OS"
-    ))
-    repo.atualizar = AsyncMock(side_effect=AssertionError(
-        "item_estoque_repo não deve ser chamado na fase de execução da OS"
-    ))
-    return repo
-
-
-@pytest.fixture
-def mock_uow(mock_os_repo, mock_item_estoque_repo):
+def mock_uow(mock_os_repo):
     uow = MagicMock()
     uow.ordem_servico_repo = mock_os_repo
-    uow.item_estoque_repo = mock_item_estoque_repo
     uow.commit = AsyncMock()
     uow.rollback = AsyncMock()
     uow.__aenter__ = AsyncMock(return_value=uow)
@@ -264,29 +250,6 @@ class TestIniciarExecucaoOrdemServicoUseCase:
         mock_uow.commit.assert_not_called()
         mock_uow.ordem_servico_repo.atualizar_item.assert_not_called()
         mock_uow.ordem_servico_repo.atualizar.assert_not_called()
-
-    async def test_iniciar_execucao_nao_deve_alterar_estoque(self, mock_uow):
-        """item_estoque_repo não deve ser chamado ao iniciar execução."""
-        os = _os_fake(StatusOrdemServico.APROVADA)
-        item_reservado = _osi_fake(os, StatusItemNaOS.RESERVADO)
-
-        mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.ordem_servico_repo.listar_itens_da_os = AsyncMock(return_value=[item_reservado])
-        mock_uow.ordem_servico_repo.listar_servicos_da_os = AsyncMock(return_value=[])
-
-        # Sobrescreve o mock de estoque com um que NÃO levanta erro, para verificar
-        # que nenhum método foi invocado
-        estoque_repo = MagicMock()
-        estoque_repo.obter_por_id_com_lock = AsyncMock()
-        estoque_repo.atualizar = AsyncMock()
-        mock_uow.item_estoque_repo = estoque_repo
-
-        uc = IniciarExecucaoOrdemServicoUseCase(uow=mock_uow)
-        await uc.execute(str(os.id))
-
-        estoque_repo.obter_por_id_com_lock.assert_not_called()
-        estoque_repo.atualizar.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # RegistrarTempoExecutadoServicoUseCase
@@ -598,27 +561,6 @@ class TestFinalizarOrdemServicoUseCase:
         mock_uow.ordem_servico_repo.atualizar_item.assert_not_called()
         # validar que no response o item ainda aparece com status EM_USO
         assert resultado.itens[0].status == StatusItemNaOS.EM_USO.value
-
-    async def test_finalizar_nao_deve_alterar_estoque(self, mock_uow):
-        """item_estoque_repo não deve ser chamado ao finalizar OS."""
-        os = _os_fake(StatusOrdemServico.EM_EXECUCAO)
-        servico = _oss_fake(os, tempo_executado_minutos=60)
-
-        mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.ordem_servico_repo.listar_servicos_da_os = AsyncMock(return_value=[servico])
-        mock_uow.ordem_servico_repo.listar_itens_da_os = AsyncMock(return_value=[])
-
-        # Sobrescreve o mock de estoque com um que NÃO levanta erro
-        estoque_repo = MagicMock()
-        estoque_repo.obter_por_id_com_lock = AsyncMock()
-        estoque_repo.atualizar = AsyncMock()
-        mock_uow.item_estoque_repo = estoque_repo
-
-        uc = FinalizarOrdemServicoUseCase(uow=mock_uow)
-        await uc.execute(str(os.id))
-
-        estoque_repo.obter_por_id_com_lock.assert_not_called()
-        estoque_repo.atualizar.assert_not_called()
 
     async def test_finalizar_os_sem_servicos_ativos(self, mock_uow):
         """OS sem serviços ativos (todos cancelados ou sem serviços) pode ser finalizada."""

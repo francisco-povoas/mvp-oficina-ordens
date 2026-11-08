@@ -5,8 +5,8 @@ from typing import Annotated
 from fastapi import Depends
 
 from app.integrations.resources import (
-    ItemEstoquePort,
     RecursosIndisponiveisAdapter,
+    RecursosOperacoesPort,
     ServicoCatalogoPort,
 )
 from app.modules.clientes.infrastructure.db.repositories.cliente_repo import ClienteRepo
@@ -59,14 +59,13 @@ def get_recursos_adapter() -> RecursosIndisponiveisAdapter:
     return RecursosIndisponiveisAdapter()
 
 
-_ItemEstoquePortDep = Annotated[ItemEstoquePort, Depends(get_recursos_adapter)]
+_RecursosOperacoesDep = Annotated[RecursosOperacoesPort, Depends(get_recursos_adapter)]
 
 
 def get_ordem_servico_uow(
     session: Annotated[DBSession, Depends(get_db_session)],
-    item_estoque_repo: _ItemEstoquePortDep,
 ) -> OrdemServicoUoWProtocol:
-    return ordem_servico_uow_factory(session, item_estoque_repo)  # type: ignore[return-value]
+    return ordem_servico_uow_factory(session)  # type: ignore[return-value]
 
 
 def get_cliente_repo(
@@ -133,20 +132,26 @@ def get_remover_servico(uow: _UoWDep) -> RemoverServicoDaOrdemServicoUseCase:
     return RemoverServicoDaOrdemServicoUseCase(uow=uow)
 
 
-def get_adicionar_item(uow: _UoWDep) -> AdicionarItemNaOrdemServicoUseCase:
-    return AdicionarItemNaOrdemServicoUseCase(uow=uow)
+def get_adicionar_item(
+    uow: _UoWDep, recursos: _RecursosOperacoesDep
+) -> AdicionarItemNaOrdemServicoUseCase:
+    return AdicionarItemNaOrdemServicoUseCase(uow=uow, recursos=recursos)
 
 
-def get_remover_item(uow: _UoWDep) -> RemoverItemDaOrdemServicoUseCase:
-    return RemoverItemDaOrdemServicoUseCase(uow=uow)
+def get_remover_item(
+    uow: _UoWDep, recursos: _RecursosOperacoesDep
+) -> RemoverItemDaOrdemServicoUseCase:
+    return RemoverItemDaOrdemServicoUseCase(uow=uow, recursos=recursos)
 
 
 def get_concluir_diagnostico(uow: _UoWDep) -> ConcluirDiagnosticoOrdemServicoUseCase:
     return ConcluirDiagnosticoOrdemServicoUseCase(uow=uow)
 
 
-def get_confirmar_recebimento_item(uow: _UoWDep) -> ConfirmarRecebimentoItemDaOrdemServicoUseCase:
-    return ConfirmarRecebimentoItemDaOrdemServicoUseCase(uow=uow)
+def get_confirmar_recebimento_item(
+    uow: _UoWDep, recursos: _RecursosOperacoesDep
+) -> ConfirmarRecebimentoItemDaOrdemServicoUseCase:
+    return ConfirmarRecebimentoItemDaOrdemServicoUseCase(uow=uow, recursos=recursos)
 
 
 def get_iniciar_execucao(uow: _UoWDep) -> IniciarExecucaoOrdemServicoUseCase:
@@ -161,8 +166,10 @@ def get_finalizar_ordem_servico(uow: _UoWDep) -> FinalizarOrdemServicoUseCase:
     return FinalizarOrdemServicoUseCase(uow=uow)
 
 
-def get_entregar_ordem_servico(uow: _UoWDep) -> EntregarOrdemServicoUseCase:
-    return EntregarOrdemServicoUseCase(uow=uow)
+def get_entregar_ordem_servico(
+    uow: _UoWDep, recursos: _RecursosOperacoesDep
+) -> EntregarOrdemServicoUseCase:
+    return EntregarOrdemServicoUseCase(uow=uow, recursos=recursos)
 
 
 def get_obter_estatistica_tempo_execucao_servico(

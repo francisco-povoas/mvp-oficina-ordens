@@ -1,14 +1,10 @@
 """Use case: Iniciar Diagnóstico de uma Ordem de Serviço."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from app.logger import setup_logger
 from app.modules.ordens_servico.application.dtos.ordem_servico import OrdemServicoResumoResponse
-from app.modules.ordens_servico.domain.entities.ordem_servico import (
-    OrdemServico,
-    StatusOrdemServico,
-)
+from app.modules.ordens_servico.domain.entities.ordem_servico import OrdemServico
 from app.modules.ordens_servico.domain.exceptions import OrdemServicoNaoEncontradaError
 from app.modules.ordens_servico.domain.ports.ordem_servico_uow import OrdemServicoUnitOfWork
 from app.shared.value_objects.id import ID
@@ -30,21 +26,7 @@ class IniciarDiagnosticoOrdemServicoUseCase:
                     f"OS com ID {ordem_servico_id} não encontrada."
                 )
 
-            os.validar_transicao(StatusOrdemServico.EM_DIAGNOSTICO)
-
-            agora = datetime.now(UTC)
-            os_atualizada = OrdemServico(
-                id=os.id,
-                cliente_id=os.cliente_id,
-                veiculo_id=os.veiculo_id,
-                status=StatusOrdemServico.EM_DIAGNOSTICO,
-                queixa_inicial=os.queixa_inicial,
-                diagnostico=os.diagnostico,
-                criado_em=os.criado_em,
-                atualizado_em=agora,
-                iniciado_diagnostico_em=agora,
-                diagnostico_concluido_em=os.diagnostico_concluido_em,
-            )
+            os_atualizada = os.iniciar_diagnostico()
 
             await self.uow.ordem_servico_repo.atualizar(os_atualizada)
             logger.info(f"Diagnóstico da OS '{ordem_servico_id}' iniciado")
