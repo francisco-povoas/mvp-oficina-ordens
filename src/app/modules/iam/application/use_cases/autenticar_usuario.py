@@ -1,0 +1,51 @@
+from dataclasses import dataclass
+
+from opentelemetry import trace
+
+from app.logger import setup_logger
+from app.modules.iam.application.dtos.usuario import UsuarioResponseWithPerfis
+from app.modules.iam.domain.exceptions import AutenticacaoFalhouError
+from app.modules.iam.domain.ports.usuario_repo import UsuarioRepo
+from app.shared.ports.hasher import HasherProtocol
+from app.shared.value_objects.email import Email, InvalidEmailError
+
+logger = setup_logger(__name__)
+tracer = trace.get_tracer(__name__)
+
+
+@dataclass(frozen=True)
+class AutenticarUsuarioUseCase:
+    usuario_repo: UsuarioRepo
+    hasher: HasherProtocol
+
+    async def execute(self, email_str: str, senha_str: str) -> UsuarioResponseWithPerfis:
+        """Autentica um usuário por e-mail e senha.
+
+        Raises:
+            AutenticacaoFalhouError: Se as credenciais forem inválidas.
+        """
+        try:
+            email = Email(email_str)
+        except InvalidEmailError:
+            raise AutenticacaoFalhouError("Credenciais inválidas")
+
+        usuario = await self.usuario_repo.obter_por_email(email)
+        if not usuario:
+            raise AutenticacaoFalhouError("Credenciais inválidas")
+
+        with tracer.start_as_current_span("auth.verify_password"):
+            senha_valida = self.hasher.verify(senha_str, usuario.senha.value)
+
+        if not senha_valida:
+            raise AutenticacaoFalhouError("Credenciais inválidas")
+
+        # buscar perfis do usuário
+        perfis = await self.usuario_repo.listar_perfis_do_usuario(usuario.id)
+
+        logger.info(f"Usuário {email_str} autenticado com sucesso")
+        return UsuarioResponseWithPerfis(
+            id=str(usuario.id),
+            nome=usuario.nome,
+            email=usuario.email.value,
+            perfis=perfis
+        )

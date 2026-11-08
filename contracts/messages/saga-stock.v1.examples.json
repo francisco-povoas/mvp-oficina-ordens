@@ -1,0 +1,179 @@
+[
+  {
+    "message_id": "00000000-0000-4000-8000-000000000001",
+    "message_type": "ReserveItem",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T12:00:00Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000001",
+    "causation_id": null,
+    "operation_id": "20000000-0000-4000-8000-000000000001",
+    "saga_id": "30000000-0000-4000-8000-000000000001",
+    "payload": {
+      "order_id": "40000000-0000-4000-8000-000000000001",
+      "order_item_id": "50000000-0000-4000-8000-000000000001",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2,
+      "resource_snapshot": {
+        "name": "Filtro de óleo",
+        "description": "Filtro compatível",
+        "unit_price": "45.90"
+      }
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000002",
+    "message_type": "ResourceReserved",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T12:00:01Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000001",
+    "causation_id": "00000000-0000-4000-8000-000000000001",
+    "operation_id": "20000000-0000-4000-8000-000000000001",
+    "saga_id": "30000000-0000-4000-8000-000000000001",
+    "payload": {
+      "reservation_id": "70000000-0000-4000-8000-000000000001",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2,
+      "reserved_at": "2026-11-07T12:00:01Z",
+      "resource_snapshot": {
+        "name": "Filtro de óleo",
+        "description": "Filtro compatível",
+        "unit_price": "45.90"
+      }
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000003",
+    "message_type": "ItemBackordered",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T12:00:01Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000001",
+    "causation_id": "00000000-0000-4000-8000-000000000001",
+    "operation_id": "20000000-0000-4000-8000-000000000001",
+    "saga_id": "30000000-0000-4000-8000-000000000001",
+    "payload": {
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "requested_quantity": 2,
+      "available_quantity": 1,
+      "decided_at": "2026-11-07T12:00:01Z",
+      "resource_snapshot": {
+        "name": "Filtro de óleo",
+        "description": null,
+        "unit_price": "45.90"
+      }
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000004",
+    "message_type": "ReservationRejected",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T12:00:01Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000001",
+    "causation_id": "00000000-0000-4000-8000-000000000001",
+    "operation_id": "20000000-0000-4000-8000-000000000001",
+    "saga_id": "30000000-0000-4000-8000-000000000001",
+    "payload": {
+      "resource_id": "60000000-0000-4000-8000-000000000099",
+      "rejection_code": "RESOURCE_NOT_FOUND",
+      "detail": "Recurso não encontrado",
+      "rejected_at": "2026-11-07T12:00:01Z"
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000005",
+    "message_type": "ReleaseReservation",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T12:01:00Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000001",
+    "causation_id": "00000000-0000-4000-8000-000000000002",
+    "operation_id": "20000000-0000-4000-8000-000000000001",
+    "saga_id": "30000000-0000-4000-8000-000000000001",
+    "payload": {
+      "reservation_id": "70000000-0000-4000-8000-000000000001",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2,
+      "reason": "PENDING_CANCELLATION"
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000006",
+    "message_type": "ReservationReleased",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T12:01:01Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000001",
+    "causation_id": "00000000-0000-4000-8000-000000000005",
+    "operation_id": "20000000-0000-4000-8000-000000000001",
+    "saga_id": "30000000-0000-4000-8000-000000000001",
+    "payload": {
+      "reservation_id": "70000000-0000-4000-8000-000000000001",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2,
+      "released_at": "2026-11-07T12:01:01Z"
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000007",
+    "message_type": "ReceiveBackorderedItem",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T13:00:00Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000002",
+    "causation_id": null,
+    "operation_id": "20000000-0000-4000-8000-000000000002",
+    "saga_id": null,
+    "payload": {
+      "order_id": "40000000-0000-4000-8000-000000000001",
+      "order_item_id": "50000000-0000-4000-8000-000000000001",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000008",
+    "message_type": "BackorderedItemReceived",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T13:00:01Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000002",
+    "causation_id": "00000000-0000-4000-8000-000000000007",
+    "operation_id": "20000000-0000-4000-8000-000000000002",
+    "saga_id": null,
+    "payload": {
+      "reservation_id": "70000000-0000-4000-8000-000000000002",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2,
+      "received_at": "2026-11-07T13:00:01Z"
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000009",
+    "message_type": "ConsumeReservation",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T14:00:00Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000003",
+    "causation_id": null,
+    "operation_id": "20000000-0000-4000-8000-000000000003",
+    "saga_id": null,
+    "payload": {
+      "order_id": "40000000-0000-4000-8000-000000000001",
+      "order_item_id": "50000000-0000-4000-8000-000000000001",
+      "reservation_id": "70000000-0000-4000-8000-000000000002",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2
+    }
+  },
+  {
+    "message_id": "00000000-0000-4000-8000-000000000010",
+    "message_type": "ReservationConsumed",
+    "message_version": 1,
+    "occurred_at": "2026-11-07T14:00:01Z",
+    "correlation_id": "10000000-0000-4000-8000-000000000003",
+    "causation_id": "00000000-0000-4000-8000-000000000009",
+    "operation_id": "20000000-0000-4000-8000-000000000003",
+    "saga_id": null,
+    "payload": {
+      "reservation_id": "70000000-0000-4000-8000-000000000002",
+      "resource_id": "60000000-0000-4000-8000-000000000001",
+      "quantity": 2,
+      "consumed_at": "2026-11-07T14:00:01Z"
+    }
+  }
+]
+

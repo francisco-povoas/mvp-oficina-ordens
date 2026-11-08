@@ -1,0 +1,76 @@
+from sqlalchemy import inspect, text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+async def test_alembic_aplica_schema_independente_desde_banco_vazio(
+    db_engine: AsyncEngine,
+) -> None:
+    async with db_engine.connect() as connection:
+        revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+
+        def inspect_schema(sync_connection):
+            inspector = inspect(sync_connection)
+            return {
+                "tables": set(inspector.get_table_names()),
+                "order_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("ordem_servico")
+                },
+                "item_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("ordem_servico_item")
+                },
+                "item_fks": inspector.get_foreign_keys("ordem_servico_item"),
+                "service_fks": inspector.get_foreign_keys("ordem_servico_servico"),
+                "outbox_indexes": {
+                    index["name"] for index in inspector.get_indexes("outbox_message")
+                },
+            }
+
+        schema = await connection.run_sync(inspect_schema)
+
+    expected_tables = {
+        "alembic_version",
+        "perfil",
+        "usuario",
+        "usuario_perfil",
+        "cliente",
+        "veiculo",
+        "ordem_servico",
+        "ordem_servico_servico",
+        "ordem_servico_item",
+        "outbox_message",
+    }
+    assert revision == "20261107_01_ordens"
+    assert schema["tables"] == expected_tables
+    assert "ck_ordem_status_publico" in schema["order_checks"]
+    assert {
+        "ck_os_item_quantidade_positiva",
+        "ck_os_item_valor_nao_negativo",
+        "ck_os_item_status_operacional",
+    } <= schema["item_checks"]
+    assert {fk["referred_table"] for fk in schema["item_fks"]} == {"ordem_servico"}
+    assert {fk["referred_table"] for fk in schema["service_fks"]} == {"ordem_servico"}
+    assert "ix_outbox_pending" in schema["outbox_indexes"]
+
+
+async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(
+    db_engine: AsyncEngine,
+) -> None:
+    async with db_engine.connect() as connection:
+        def inspect_boundaries(sync_connection):
+            inspector = inspect(sync_connection)
+            tables = set(inspector.get_table_names())
+            foreign_keys = {
+                (table, fk["referred_table"])
+                for table in tables
+                for fk in inspector.get_foreign_keys(table)
+            }
+            return tables, foreign_keys
+
+        tables, foreign_keys = await connection.run_sync(inspect_boundaries)
+
+    assert tables.isdisjoint(
+        {"catalogo_servico", "item_estoque", "reserva_estoque", "orcamento", "pagamento"}
+    )
+    assert all(target in tables for _, target in foreign_keys)
