@@ -21,4 +21,6 @@ def test_conflito_de_versao_vira_http_409() -> None:
         response = client.get("/test/version-conflict")
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "versão concorrente"}
+    assert response.json()["code"] == "ORDER_VERSION_CONFLICT"
+    assert response.headers["X-Correlation-ID"] == response.json()["correlation_id"]
+    assert "versão concorrente" not in response.json()["message"]

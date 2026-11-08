@@ -13,6 +13,7 @@ from app.shared.infra.security.jwt import InvalidToken, JWTProvider
 
 SECRET = "segredo-hs256-exclusivo-dos-testes"
 CLIENT_SECRET = "credencial-interna-de-teste"
+CORRELATION_ID = str(uuid4())
 
 
 def _settings() -> Settings:
@@ -53,7 +54,11 @@ def _issue(client: TestClient, **overrides) -> dict:
         "scope": "orders:quote-context:read",
         **overrides,
     }
-    response = client.post("/internal/v1/auth/token", json=body)
+    response = client.post(
+        "/internal/v1/auth/token",
+        json=body,
+        headers={"X-Correlation-ID": CORRELATION_ID},
+    )
     assert response.status_code == 200
     return response.json()
 
@@ -94,6 +99,7 @@ def test_internal_token_endpoint_rejects_invalid_client_or_grant(override, statu
                 "scope": "orders:quote-context:read",
                 **override,
             },
+            headers={"X-Correlation-ID": CORRELATION_ID},
         )
     assert response.status_code == status
 
@@ -110,12 +116,18 @@ def test_internal_endpoint_rejects_user_token_and_accepts_exact_service_grant() 
     with TestClient(create_app(settings)) as client:
         rejected = client.get(
             f"/internal/v1/orders/{uuid4()}/quote-context",
-            headers={"Authorization": f"Bearer {user}"},
+            headers={
+                "Authorization": f"Bearer {user}",
+                "X-Correlation-ID": CORRELATION_ID,
+            },
         )
         service = _issue(client)["access_token"]
         accepted = client.get(
             f"/internal/v1/orders/{uuid4()}/quote-context",
-            headers={"Authorization": f"Bearer {service}"},
+            headers={
+                "Authorization": f"Bearer {service}",
+                "X-Correlation-ID": CORRELATION_ID,
+            },
         )
 
     assert rejected.status_code == 401
@@ -146,9 +158,19 @@ def test_internal_endpoint_rejects_wrong_scope_audience_and_expiration() -> None
 
     with TestClient(create_app(settings)) as client:
         path = f"/internal/v1/orders/{uuid4()}/quote-context"
-        assert client.get(path, headers={"Authorization": f"Bearer {wrong_scope}"}).status_code == 403
-        assert client.get(path, headers={"Authorization": f"Bearer {wrong_audience}"}).status_code == 401
-        assert client.get(path, headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+        headers = {"X-Correlation-ID": CORRELATION_ID}
+        assert client.get(
+            path,
+            headers={**headers, "Authorization": f"Bearer {wrong_scope}"},
+        ).status_code == 403
+        assert client.get(
+            path,
+            headers={**headers, "Authorization": f"Bearer {wrong_audience}"},
+        ).status_code == 401
+        assert client.get(
+            path,
+            headers={**headers, "Authorization": f"Bearer {expired}"},
+        ).status_code == 401
 
 
 def test_public_user_dependency_rejects_service_token() -> None:
