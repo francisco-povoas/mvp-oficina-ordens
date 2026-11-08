@@ -295,3 +295,26 @@ async def test_falha_agenda_retry_e_confirmacao_remove_pendencia(
             lease_duration=timedelta(seconds=30),
             now=published_at + timedelta(minutes=1),
         )
+
+
+async def test_claim_respeita_limite_de_tentativas(
+    db_engine: AsyncEngine,
+) -> None:
+    now = datetime.now(UTC)
+    [message] = await _persist_messages(db_engine, count=1, occurred_at=now)
+    factory = _factory(db_engine)
+
+    async with factory() as session:
+        stored = await session.get(OutboxMessageModel, message.message_id)
+        assert stored is not None
+        stored.attempts = 8
+        await session.commit()
+
+    async with factory() as session:
+        assert not await PostgresOutboxRepository(session).claim_pending(
+            worker_id="publisher-limitado",
+            batch_size=1,
+            lease_duration=timedelta(seconds=30),
+            max_attempts=8,
+            now=now + timedelta(minutes=1),
+        )

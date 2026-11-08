@@ -48,7 +48,7 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ordem_servico_item",
         "outbox_message",
     }
-    assert revision == "20261108_02_outbox"
+    assert revision == "20261108_03_outbox_saga"
     assert schema["tables"] == expected_tables
     assert "ck_ordem_status_publico" in schema["order_checks"]
     assert {
@@ -74,6 +74,7 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "last_error",
         "last_failed_at",
     } <= schema["outbox_columns"]
+    assert "saga_id" in schema["outbox_columns"]
 
 
 async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(
