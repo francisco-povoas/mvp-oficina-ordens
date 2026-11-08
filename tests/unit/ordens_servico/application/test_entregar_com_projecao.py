@@ -1,5 +1,6 @@
 """Entrega baseada na projeção financeira confirmada."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -7,6 +8,11 @@ from uuid import uuid4
 
 import pytest
 
+from app.integrations.finance import (
+    FinancialStatus,
+    PaymentFinancialStatus,
+    QuoteFinancialStatus,
+)
 from app.integrations.resources import (
     ConsumirReservaResult,
     ResourceDependencyUnavailable,
@@ -21,6 +27,9 @@ from app.modules.ordens_servico.domain.entities.ordem_servico import (
 from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
     OrdemServicoItem,
     StatusItemNaOS,
+)
+from app.modules.ordens_servico.domain.exceptions import (
+    OrdemServicoPagamentoNaoRegistradoError,
 )
 from app.shared.value_objects.id import ID
 
@@ -140,3 +149,101 @@ async def test_entrega_nao_marca_consumo_quando_recursos_esta_indisponivel() -> 
     repo.atualizar_item.assert_not_awaited()
     repo.atualizar.assert_not_awaited()
     uow.commit.assert_not_awaited()
+
+
+async def test_entrega_reconcilia_pagamento_confirmado_e_preserva_versoes() -> None:
+    ordem = replace(
+        _ordem_liquidada(),
+        payment_id=None,
+        payment_status=None,
+        payment_amount=None,
+        payment_confirmed_at=None,
+        payment_quote_version=None,
+    )
+    repo = MagicMock()
+    repo.obter_por_id = AsyncMock(return_value=ordem)
+    repo.listar_itens_da_os = AsyncMock(return_value=[])
+    repo.listar_servicos_da_os = AsyncMock(return_value=[])
+    repo.atualizar = AsyncMock()
+    uow = MagicMock()
+    uow.ordem_servico_repo = repo
+    uow.commit = AsyncMock()
+    uow.__aenter__ = AsyncMock(return_value=uow)
+    uow.__aexit__ = AsyncMock(return_value=None)
+    financeiro = MagicMock()
+    financeiro.obter_status = AsyncMock(
+        return_value=FinancialStatus(
+            order_id=ordem.id.value,
+            quote=QuoteFinancialStatus(
+                quote_id=uuid4(),
+                quote_version=3,
+                status="APROVADO",
+                total=Decimal("270.00"),
+            ),
+            payment=PaymentFinancialStatus(
+                payment_id=uuid4(),
+                status="CONFIRMED",
+                amount=Decimal("270.00"),
+                confirmed_at=datetime.now(UTC),
+            ),
+            reconciled_at=datetime.now(UTC),
+        )
+    )
+
+    response = await EntregarOrdemServicoUseCase(
+        uow=uow,
+        recursos=MagicMock(),
+        financeiro=financeiro,
+    ).execute(str(ordem.id))
+
+    assert response.status == "ENTREGUE"
+    assert [call.args[0].version for call in repo.atualizar.await_args_list] == [
+        ordem.version + 1,
+        ordem.version + 2,
+    ]
+
+
+async def test_entrega_falha_fechada_para_pagamento_unknown() -> None:
+    ordem = replace(
+        _ordem_liquidada(),
+        payment_id=None,
+        payment_status=None,
+        payment_amount=None,
+        payment_confirmed_at=None,
+        payment_quote_version=None,
+    )
+    repo = MagicMock()
+    repo.obter_por_id = AsyncMock(return_value=ordem)
+    repo.atualizar = AsyncMock()
+    uow = MagicMock()
+    uow.ordem_servico_repo = repo
+    uow.__aenter__ = AsyncMock(return_value=uow)
+    uow.__aexit__ = AsyncMock(return_value=None)
+    financeiro = MagicMock()
+    financeiro.obter_status = AsyncMock(
+        return_value=FinancialStatus(
+            order_id=ordem.id.value,
+            quote=QuoteFinancialStatus(
+                quote_id=uuid4(),
+                quote_version=3,
+                status="APROVADO",
+                total=Decimal("270.00"),
+            ),
+            payment=PaymentFinancialStatus(
+                payment_id=uuid4(),
+                status="UNKNOWN",
+                amount=Decimal("270.00"),
+                confirmed_at=None,
+            ),
+            reconciled_at=datetime.now(UTC),
+        )
+    )
+
+    with pytest.raises(OrdemServicoPagamentoNaoRegistradoError):
+        await EntregarOrdemServicoUseCase(
+            uow=uow,
+            recursos=MagicMock(),
+            financeiro=financeiro,
+        ).execute(str(ordem.id))
+
+    repo.atualizar.assert_not_awaited()

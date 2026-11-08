@@ -11,6 +11,18 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from app.integrations.http import (
+    AsyncServiceTokenProvider,
+    DependencyAuthenticationError,
+    DependencyAuthorizationError,
+    DependencyContractError,
+    DependencyTimeoutError,
+    DependencyUnavailableError,
+    validate_correlation,
+)
 from app.shared.value_objects.id import ID
 
 
@@ -55,8 +67,8 @@ class ServicoSnapshot:
     valor_base: Decimal
     tempo_medio_minutos: int
     ativo: bool
-    criado_em: datetime
-    atualizado_em: datetime
+    criado_em: datetime | None = None
+    atualizado_em: datetime | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -180,4 +192,87 @@ class RecursosIndisponiveisAdapter(RecursosOperacoesPort, ServicoCatalogoPort):
     async def obter_por_id(self, servico_id: ID) -> ServicoSnapshot | None:
         raise ResourceDependencyUnavailable(
             "Integração com catálogo planejada para a Etapa 2; operação não concluída"
+        )
+
+
+class _ServiceSnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_id: UUID
+    name: str
+    description: str | None
+    price: Decimal = Field(ge=0)
+    estimated_minutes: int = Field(gt=0)
+    active: bool
+    version: int = Field(ge=1)
+
+
+class RecursosHTTPAdapter(RecursosIndisponiveisAdapter):
+    """REST somente para catálogo; operações de estoque continuam fail-closed."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        service_name: str,
+        token_provider: AsyncServiceTokenProvider,
+        correlation_id: str,
+        timeout: httpx.Timeout,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._service_name = service_name
+        self._token_provider = token_provider
+        self._correlation_id = correlation_id
+        self._timeout = timeout
+        self._transport = transport
+
+    async def obter_por_id(self, servico_id: ID) -> ServicoSnapshot | None:
+        token = await self._token_provider.get_token(
+            audience=self._service_name,
+            scopes={"resources:catalog:read"},
+            correlation_id=self._correlation_id,
+        )
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    f"/internal/v1/catalog/services/{servico_id.value}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Correlation-ID": self._correlation_id,
+                    },
+                )
+        except httpx.TimeoutException as exc:
+            raise DependencyTimeoutError("Timeout ao consultar catálogo") from exc
+        except httpx.RequestError as exc:
+            raise DependencyUnavailableError("Catálogo de Recursos indisponível") from exc
+
+        validate_correlation(response, self._correlation_id)
+        if response.status_code == 404:
+            return None
+        if response.status_code == 401:
+            raise DependencyAuthenticationError("Token recusado por Recursos")
+        if response.status_code == 403:
+            raise DependencyAuthorizationError("Escopo recusado por Recursos")
+        if response.status_code >= 500:
+            raise DependencyUnavailableError("Catálogo de Recursos indisponível")
+        if response.status_code != 200:
+            raise DependencyContractError("Resposta inesperada do catálogo")
+        try:
+            payload = _ServiceSnapshotResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise DependencyContractError("Snapshot de serviço incompatível") from exc
+        if payload.service_id != servico_id.value:
+            raise DependencyContractError("Catálogo respondeu identificador divergente")
+        return ServicoSnapshot(
+            id=ID(payload.service_id),
+            nome=payload.name,
+            descricao=payload.description,
+            valor_base=payload.price,
+            tempo_medio_minutos=payload.estimated_minutes,
+            ativo=payload.active,
         )

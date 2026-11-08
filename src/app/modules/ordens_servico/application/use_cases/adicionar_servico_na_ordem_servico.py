@@ -40,6 +40,10 @@ class AdicionarServicoNaOrdemServicoUseCase:
             raise ServicoNaoEncontradoError(
                 f"Serviço com ID {dto.servico_id} não encontrado."
             )
+        if not servico.ativo:
+            raise ServicoNaoEncontradoError(
+                f"Serviço com ID {dto.servico_id} está inativo."
+            )
 
         async with self.uow:
             os = await self.uow.ordem_servico_repo.obter_por_id(os_id)

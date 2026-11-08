@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     jwt_issuer: str = "mvp-oficina-ordens"
     jwt_user_audience: str = "mvp-oficina-users"
     service_clients_json: str = "{}"
+    internal_auth_url: str = "http://ordens:8000/internal/v1/auth/token"
+    resources_base_url: str = "http://recursos:8000"
+    finance_base_url: str = "http://financeiro:8000"
+    service_client_id: str = "mvp-oficina-ordens"
+    service_client_secret: str = ""
+    internal_connect_timeout_seconds: float = 1.0
+    internal_read_timeout_seconds: float = 2.0
 
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 

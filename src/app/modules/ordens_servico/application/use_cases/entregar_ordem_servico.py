@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from uuid import uuid4
 
+from app.integrations.finance import FinanceStatusPort
 from app.integrations.resources import ConsumirReservaCommand, RecursosOperacoesPort
 from app.logger import setup_logger
 from app.modules.ordens_servico.application.dtos.ordem_servico import OrdemServicoDetalheResponse
@@ -11,6 +12,7 @@ from app.modules.ordens_servico.domain.entities.ordem_servico_item import Status
 from app.modules.ordens_servico.domain.exceptions import (
     OrdemServicoInvalidaError,
     OrdemServicoNaoEncontradaError,
+    OrdemServicoPagamentoNaoRegistradoError,
     OrdemServicoPossuiItemPendenteError,
     OrdemServicoPossuiItemReservadoError,
 )
@@ -24,6 +26,7 @@ logger = setup_logger(__name__)
 class EntregarOrdemServicoUseCase:
     uow: OrdemServicoUnitOfWork
     recursos: RecursosOperacoesPort
+    financeiro: FinanceStatusPort | None = None
 
     async def execute(self, ordem_servico_id: str) -> OrdemServicoDetalheResponse:
         os_id = ID.from_string(ordem_servico_id)
@@ -34,6 +37,32 @@ class EntregarOrdemServicoUseCase:
                 raise OrdemServicoNaoEncontradaError(
                     f"OS com ID {ordem_servico_id} não encontrada."
                 )
+
+            if ordem.payment_status != "CONFIRMED" or ordem.payment_id is None:
+                if self.financeiro is None:
+                    raise OrdemServicoPagamentoNaoRegistradoError(
+                        "Não é possível entregar OS sem pagamento confirmado."
+                    )
+                financial_status = await self.financeiro.obter_status(ordem.id.value)
+                payment = financial_status.payment if financial_status else None
+                quote = financial_status.quote if financial_status else None
+                if (
+                    payment is None
+                    or quote is None
+                    or payment.status != "CONFIRMED"
+                    or payment.confirmed_at is None
+                    or quote.status != "APROVADO"
+                ):
+                    raise OrdemServicoPagamentoNaoRegistradoError(
+                        "Não é possível entregar OS sem confirmação financeira válida."
+                    )
+                ordem = ordem.com_pagamento_confirmado(
+                    payment_id=payment.payment_id,
+                    amount=payment.amount,
+                    confirmed_at=payment.confirmed_at,
+                    quote_version=quote.quote_version,
+                )
+                await self.uow.ordem_servico_repo.atualizar(ordem)
 
             os_entregue = ordem.entregar()
             itens = await self.uow.ordem_servico_repo.listar_itens_da_os(os_id)

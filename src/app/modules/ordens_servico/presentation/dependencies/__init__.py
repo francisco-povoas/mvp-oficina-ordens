@@ -2,9 +2,12 @@
 
 from typing import Annotated
 
-from fastapi import Depends
+import httpx
+from fastapi import Depends, Request
 
+from app.integrations.finance import FinanceHTTPClient, FinanceStatusPort
 from app.integrations.resources import (
+    RecursosHTTPAdapter,
     RecursosIndisponiveisAdapter,
     RecursosOperacoesPort,
     ServicoCatalogoPort,
@@ -55,11 +58,42 @@ def get_ordem_servico_repo(
     return OrdemServicoRepo(session)  # type: ignore[return-value]
 
 
-def get_recursos_adapter() -> RecursosIndisponiveisAdapter:
-    return RecursosIndisponiveisAdapter()
+def get_recursos_adapter(request: Request) -> RecursosIndisponiveisAdapter:
+    settings = request.app.state.settings
+    return RecursosHTTPAdapter(
+        base_url=settings.resources_base_url,
+        service_name="mvp-oficina-recursos",
+        token_provider=request.app.state.service_token_provider,
+        correlation_id=str(request.state.correlation_id),
+        timeout=httpx.Timeout(
+            connect=settings.internal_connect_timeout_seconds,
+            read=settings.internal_read_timeout_seconds,
+            write=settings.internal_read_timeout_seconds,
+            pool=settings.internal_connect_timeout_seconds,
+        ),
+    )
 
 
 _RecursosOperacoesDep = Annotated[RecursosOperacoesPort, Depends(get_recursos_adapter)]
+
+
+def get_financeiro_adapter(request: Request) -> FinanceStatusPort:
+    settings = request.app.state.settings
+    return FinanceHTTPClient(
+        base_url=settings.finance_base_url,
+        service_name="mvp-oficina-financeiro",
+        token_provider=request.app.state.service_token_provider,
+        correlation_id=str(request.state.correlation_id),
+        timeout=httpx.Timeout(
+            connect=settings.internal_connect_timeout_seconds,
+            read=settings.internal_read_timeout_seconds,
+            write=settings.internal_read_timeout_seconds,
+            pool=settings.internal_connect_timeout_seconds,
+        ),
+    )
+
+
+_FinanceiroDep = Annotated[FinanceStatusPort, Depends(get_financeiro_adapter)]
 
 
 def get_ordem_servico_uow(
@@ -80,8 +114,8 @@ def get_veiculo_repo(
     return VeiculoRepo(session)
 
 
-def get_servico_repo() -> ServicoCatalogoPort:
-    return RecursosIndisponiveisAdapter()
+def get_servico_repo(request: Request) -> ServicoCatalogoPort:
+    return get_recursos_adapter(request)
 
 
 _RepoDep = Annotated[OrdemServicoRepoProtocol, Depends(get_ordem_servico_repo)]
@@ -167,9 +201,15 @@ def get_finalizar_ordem_servico(uow: _UoWDep) -> FinalizarOrdemServicoUseCase:
 
 
 def get_entregar_ordem_servico(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
+    uow: _UoWDep,
+    recursos: _RecursosOperacoesDep,
+    financeiro: _FinanceiroDep,
 ) -> EntregarOrdemServicoUseCase:
-    return EntregarOrdemServicoUseCase(uow=uow, recursos=recursos)
+    return EntregarOrdemServicoUseCase(
+        uow=uow,
+        recursos=recursos,
+        financeiro=financeiro,
+    )
 
 
 def get_obter_estatistica_tempo_execucao_servico(
