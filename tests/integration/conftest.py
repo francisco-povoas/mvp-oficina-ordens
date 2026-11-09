@@ -16,6 +16,8 @@ from alembic import command
 DATABASE_URL = os.environ["DATABASE_URL"]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TABLES = (
+    "inbox_message",
+    "inbox_effect",
     "outbox_message",
     "ordem_servico_item",
     "ordem_servico_servico",

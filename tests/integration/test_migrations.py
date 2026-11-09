@@ -32,6 +32,17 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                 "outbox_columns": {
                     column["name"] for column in inspector.get_columns("outbox_message")
                 },
+                "inbox_message_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("inbox_message")
+                },
+                "inbox_effect_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("inbox_effect")
+                },
+                "inbox_indexes": {
+                    index["name"] for index in inspector.get_indexes("inbox_message")
+                },
             }
 
         schema = await connection.run_sync(inspect_schema)
@@ -47,8 +58,10 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ordem_servico_servico",
         "ordem_servico_item",
         "outbox_message",
+        "inbox_message",
+        "inbox_effect",
     }
-    assert revision == "20261108_03_outbox_saga"
+    assert revision == "20261109_04_inbox"
     assert schema["tables"] == expected_tables
     assert "ck_ordem_status_publico" in schema["order_checks"]
     assert {
@@ -75,6 +88,18 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "last_failed_at",
     } <= schema["outbox_columns"]
     assert "saga_id" in schema["outbox_columns"]
+    assert {
+        "ck_inbox_message_version",
+        "ck_inbox_receive_count_positivo",
+        "ck_inbox_message_status",
+        "ck_inbox_message_processing",
+    } <= schema["inbox_message_checks"]
+    assert {"ck_inbox_effect_status", "ck_inbox_effect_processing"} <= schema[
+        "inbox_effect_checks"
+    ]
+    assert {"ix_inbox_message_business_key", "ix_inbox_message_operation_id"} <= schema[
+        "inbox_indexes"
+    ]
 
 
 async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(

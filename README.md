@@ -11,10 +11,12 @@ organizados por `domain`, `application`, `infrastructure` e `presentation`, com 
 adapters locais. O serviço usa PostgreSQL próprio, SQLModel e migrations Alembic; não
 consulta bancos ou modelos dos outros microsserviços.
 
-A Outbox transacional e o publisher independente estão ativos na Etapa 2. O publisher
-reivindica lotes com lease e `FOR UPDATE SKIP LOCKED`, valida o envelope contra o JSON
-Schema v1 e publica os quatro comandos de Ordens na fila FIFO de Recursos. Inbox,
-consumers e a Saga executável ainda não foram implementados.
+A Outbox transacional, o publisher e os consumers técnicos independentes estão ativos
+na Etapa 2. O publisher reivindica lotes com lease e `FOR UPDATE SKIP LOCKED`, valida o
+envelope contra o JSON Schema v1 e publica os quatro comandos de Ordens na fila FIFO de
+Recursos. Os consumers validam e recebem os resultados de Recursos e os eventos de
+Financeiro com Inbox persistente; a Saga e seus handlers funcionais permanecem para o
+checkpoint seguinte.
 
 ## APIs, autenticação e contratos
 
@@ -40,8 +42,8 @@ REST distribuído ou mensageria já estejam ativos.
 |---|---|
 | `src/app/modules/` | IAM, clientes, veículos e ordens em Clean Architecture modular |
 | `src/app/integrations/` | ports, comandos e adapters fail-closed para Recursos |
-| `alembic/` | baseline exclusivo do PostgreSQL de Ordens |
-| `contracts/` | OpenAPI e JSON Schemas versionados para integrações futuras |
+| `alembic/` | baseline e tabelas de Outbox/Inbox no PostgreSQL de Ordens |
+| `contracts/` | OpenAPI, JSON Schemas próprios e cópia vendorizada do contrato financeiro consumido |
 | `tests/` | testes unitários, de contratos e de integração PostgreSQL |
 | `.github/workflows/ci.yml` | Ruff, suítes com cobertura mínima de 80% e build da imagem |
 
@@ -88,10 +90,33 @@ python -m app.publisher
 
 SIGTERM e SIGINT interrompem novos polls e permitem concluir a mensagem em andamento.
 A publicação é at-least-once: se o broker aceitar a mensagem e a confirmação local
-falhar, o lease expira e uma nova instância pode reenviar o mesmo `message_id`. A
-deduplicação temporária da FIFO não substitui a futura Inbox.
+falhar, o lease expira e uma nova instância pode reenviar o mesmo `message_id`.
+
+## Consumers e Inbox
+
+O processo `app.consumer` hospeda dois consumers lógicos: resultados de Recursos e
+eventos financeiros. Cada mensagem é validada pelo contrato da origem antes de entrar
+na transação PostgreSQL. A mesma transação grava a Inbox, o marcador idempotente do
+efeito e o efeito executado pelo handler. A deduplicação cobre tanto reentrega do mesmo
+`message_id` quanto uma nova emissão do mesmo efeito de negócio; payload divergente
+para a mesma chave é rejeitado como conflito.
+
+O transporte usa entrega at-least-once, concorrência limitada, renovação de
+visibilidade durante processamento e ACK somente depois do commit. Falhas permanecem
+disponíveis para retry e seguem a redrive policy da fila até a DLQ. Para executar:
+
+```bash
+python -m app.consumer
+# ou, dentro da imagem runtime:
+./scripts/start-consumer.sh
+```
+
+Neste checkpoint ainda não há handlers funcionais conectados. Por segurança, a
+composição padrão registra o estado pausado e não consulta nem drena as filas; os
+handlers da Saga serão instalados no Checkpoint E. SIGTERM e SIGINT encerram novos
+polls e aguardam o trabalho em andamento quando houver handlers instalados.
 
 ## Próxima etapa funcional
 
-A Etapa 2 continuará com publisher de Recursos e Financeiro e, em checkpoints
-posteriores, Inbox, consumers e Saga de reserva/compensação.
+O Checkpoint E conectará os handlers da Saga de reserva/compensação aos consumers
+técnicos, sem alterar os limites de responsabilidade entre os serviços.
