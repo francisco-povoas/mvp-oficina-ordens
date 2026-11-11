@@ -3,6 +3,9 @@
 from typing import Protocol
 
 from app.modules.ordens_servico.domain.ports.ordem_servico_repo import OrdemServicoRepo
+from app.modules.ordens_servico.domain.ports.reserva_item_saga_repo import (
+    ReservaItemSagaRepo,
+)
 from app.shared.outbox import OutboxRepository
 
 
@@ -10,6 +13,7 @@ class OrdemServicoUnitOfWork(Protocol):
     """Agrupa somente persistência pertencente ao serviço de Ordens."""
 
     ordem_servico_repo: OrdemServicoRepo
+    reserva_item_saga_repo: ReservaItemSagaRepo
     outbox: OutboxRepository
 
     async def __aenter__(self): ...

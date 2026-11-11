@@ -43,6 +43,15 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                 "inbox_indexes": {
                     index["name"] for index in inspector.get_indexes("inbox_message")
                 },
+                "saga_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("reserva_item_saga")
+                },
+                "saga_indexes": {
+                    index["name"]
+                    for index in inspector.get_indexes("reserva_item_saga")
+                },
+                "saga_fks": inspector.get_foreign_keys("reserva_item_saga"),
             }
 
         schema = await connection.run_sync(inspect_schema)
@@ -60,8 +69,9 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "outbox_message",
         "inbox_message",
         "inbox_effect",
+        "reserva_item_saga",
     }
-    assert revision == "20261109_04_inbox"
+    assert revision == "20261111_05_reserva_saga"
     assert schema["tables"] == expected_tables
     assert "ck_ordem_status_publico" in schema["order_checks"]
     assert {
@@ -100,6 +110,24 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
     assert {"ix_inbox_message_business_key", "ix_inbox_message_operation_id"} <= schema[
         "inbox_indexes"
     ]
+    assert {
+        "ck_reserva_saga_quantity_positiva",
+        "ck_reserva_saga_version_positiva",
+        "ck_reserva_saga_estado",
+        "ck_reserva_saga_comando",
+        "ck_reserva_saga_resultado_terminal",
+        "ck_reserva_saga_rejeicao",
+        "ck_reserva_saga_terminal",
+        "ck_reserva_saga_idempotency_key",
+        "ck_reserva_saga_request_hash",
+        "ck_reserva_saga_snapshot_valor",
+    } <= schema["saga_checks"]
+    assert {fk["referred_table"] for fk in schema["saga_fks"]} == {"ordem_servico"}
+    assert {
+        "ix_reserva_item_saga_operation_id",
+        "ix_reserva_item_saga_ordem_servico_id",
+        "ix_reserva_item_saga_estado",
+    } <= schema["saga_indexes"]
 
 
 async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(

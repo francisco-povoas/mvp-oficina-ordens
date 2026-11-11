@@ -16,6 +16,7 @@ from app.modules.ordens_servico.infrastructure.db.models import (
     OrdemServicoItemModel,
     OrdemServicoModel,
     OrdemServicoServicoModel,
+    ReservaItemSagaModel,
 )
 from app.modules.veiculos.infrastructure.db.models.veiculo import VeiculoModel
 from app.shared.infra.db.outbox_model import OutboxMessageModel
@@ -29,6 +30,7 @@ _MODELS = (
     OrdemServicoModel,
     OrdemServicoServicoModel,
     OrdemServicoItemModel,
+    ReservaItemSagaModel,
     OutboxMessageModel,
 )
 config = context.config

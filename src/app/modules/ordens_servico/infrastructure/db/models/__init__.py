@@ -7,5 +7,13 @@ from app.modules.ordens_servico.infrastructure.db.models.ordem_servico_model imp
 from app.modules.ordens_servico.infrastructure.db.models.ordem_servico_servico_model import (
     OrdemServicoServicoModel,
 )
+from app.modules.ordens_servico.infrastructure.db.models.reserva_item_saga_model import (
+    ReservaItemSagaModel,
+)
 
-__all__ = ["OrdemServicoModel", "OrdemServicoServicoModel", "OrdemServicoItemModel"]
+__all__ = [
+    "OrdemServicoModel",
+    "OrdemServicoServicoModel",
+    "OrdemServicoItemModel",
+    "ReservaItemSagaModel",
+]

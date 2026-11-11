@@ -88,3 +88,21 @@ class EstoqueReservadoInsuficienteError(DomainException):
     """Lançada quando a quantidade reservada no estoque é insuficiente para consumir o item."""
     pass
 
+
+class ReservaItemSagaInvalidaError(DomainException):
+    """Lançada quando os dados persistentes da Saga violam suas invariantes."""
+
+    pass
+
+
+class ReservaItemSagaTransicaoInvalidaError(DomainException):
+    """Lançada quando um resultado faria a Saga regredir ou contradizer seu estado."""
+
+    pass
+
+
+class ReservaItemSagaConflitoDeVersaoError(DomainException):
+    """Lançada quando uma atualização concorrente venceu a versão otimista."""
+
+    pass
+
