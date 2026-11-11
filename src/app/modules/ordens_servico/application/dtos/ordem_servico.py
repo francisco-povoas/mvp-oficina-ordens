@@ -70,6 +70,18 @@ class OrdemServicoItemResponse:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ReservaItemSagaResponse:
+    operation_id: str
+    saga_id: str
+    ordem_servico_item_id: str
+    estado: str
+    terminal_result: Optional[str]
+    rejection_code: Optional[str]
+    reservation_id: Optional[str]
+    status_url: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class OrdemServicoResumoResponse:
     """Resposta resumida — usada na listagem."""
 

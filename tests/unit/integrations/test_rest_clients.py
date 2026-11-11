@@ -135,3 +135,51 @@ async def test_catalog_distinguishes_not_found_auth_timeout_and_contract() -> No
         await adapter_for("timeout").obter_por_id(ID(service_id))
     with pytest.raises(DependencyContractError):
         await adapter_for("invalid").obter_por_id(ID(service_id))
+
+
+@pytest.mark.asyncio
+async def test_resource_catalog_returns_snapshot_without_stock_balances() -> None:
+    correlation_id = str(uuid4())
+    resource_id = uuid4()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/token"):
+            return httpx.Response(
+                200,
+                headers={"X-Correlation-ID": correlation_id},
+                json={
+                    "access_token": "token",
+                    "token_type": "bearer",
+                    "expires_in": 300,
+                    "scope": "resources:catalog:read",
+                },
+            )
+        assert request.url.path == f"/internal/v1/catalog/resources/{resource_id}"
+        return httpx.Response(
+            200,
+            headers={"X-Correlation-ID": correlation_id},
+            json={
+                "resource_id": str(resource_id),
+                "name": "Filtro de óleo",
+                "description": "Snapshot",
+                "unit_price": "45.90",
+                "version": 1,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    adapter = RecursosHTTPAdapter(
+        base_url="http://recursos",
+        service_name="mvp-oficina-recursos",
+        token_provider=AsyncServiceTokenProvider(_config(), transport=transport),
+        correlation_id=correlation_id,
+        timeout=_config().timeout,
+        transport=transport,
+    )
+
+    snapshot = await adapter.obter_recurso_por_id(ID(resource_id))
+
+    assert snapshot is not None
+    assert snapshot.id.value == resource_id
+    assert snapshot.nome == "Filtro de óleo"
+    assert not hasattr(snapshot, "quantidade_disponivel")

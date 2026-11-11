@@ -1,10 +1,10 @@
 """Router de Ordens de Serviço."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app.integrations.resources import ItemEstoqueNaoEncontradoError, ServicoNaoEncontradoError
 from app.modules.clientes.domain.exceptions import ClienteNaoEncontradoError
@@ -16,11 +16,11 @@ from app.modules.ordens_servico.application.dtos.ordem_servico import (
     EstatisticaTempoExecucaoServicoResponse,
     ListagemExecucoesServicoResponse,
     OrdemServicoDetalheResponse,
-    OrdemServicoItemResponse,
     OrdemServicoResumoResponse,
     OrdemServicoServicoResponse,
     RegistrarDiagnosticoRequest,
     RegistrarTempoExecutadoServicoRequest,
+    ReservaItemSagaResponse,
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico import StatusOrdemServico
 from app.modules.ordens_servico.domain.exceptions import (
@@ -38,6 +38,8 @@ from app.modules.ordens_servico.domain.exceptions import (
     OrdemServicoServicoCanceladoError,
     OrdemServicoServicoNaoEncontradoError,
     OrdemServicoTransicaoInvalidaError,
+    ReservaItemSagaIdempotenciaConflitanteError,
+    ReservaItemSagaNaoEncontradaError,
     ServicoJaAdicionadoNaOrdemServicoError,
     TempoExecutadoInvalidoError,
 )
@@ -56,6 +58,7 @@ from app.modules.ordens_servico.presentation.dependencies import (
     ListarOrdensServicoDep,
     ObterEstatisticaTempoExecucaoDep,
     ObterOrdemServicoPorIdDep,
+    ObterReservaItemSagaDep,
     RegistrarDiagnosticoDep,
     RegistrarTempoExecutadoDep,
     RemoverItemDep,
@@ -370,10 +373,10 @@ async def remover_servico(
 
 @router.post(
     "/{ordem_servico_id}/itens",
-    status_code=201,
-    summary="Adicionar Item de Estoque à OS",
+    status_code=202,
+    summary="Iniciar inclusão assíncrona de peça na OS",
     responses={
-        201: {"description": "Item adicionado à OS com sucesso", "model": OrdemServicoItemResponse},
+        202: {"description": "Saga de reserva aceita", "model": ReservaItemSagaResponse},
         **_RESPONSES_AUTH,
         **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou Item de estoque não encontrado", "model": ErrorResponse},
@@ -385,18 +388,53 @@ async def remover_servico(
 async def adicionar_item(
     ordem_servico_id: UUID,
     dto: AdicionarItemNaOSRequest,
+    request: Request,
     usecase: AdicionarItemDep,
-) -> OrdemServicoItemResponse:
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=8, max_length=128),
+    ],
+) -> ReservaItemSagaResponse:
     try:
-        return await usecase.execute(str(ordem_servico_id), dto)
+        return await usecase.execute(
+            str(ordem_servico_id),
+            dto,
+            idempotency_key=idempotency_key,
+            correlation_id=request.state.correlation_id,
+        )
     except (OrdemServicoNaoEncontradaError, ItemEstoqueNaoEncontradoError) as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    except ItemJaAdicionadoNaOrdemServicoError as exc:
+    except (
+        ItemJaAdicionadoNaOrdemServicoError,
+        ReservaItemSagaIdempotenciaConflitanteError,
+    ) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except (OrdemServicoInvalidaError, OrdemServicoTransicaoInvalidaError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except InvalidIDError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get(
+    "/{ordem_servico_id}/itens/operacoes/{operation_id}",
+    status_code=200,
+    summary="Consultar operação assíncrona de reserva",
+    responses={
+        200: {"description": "Estado persistido da Saga", "model": ReservaItemSagaResponse},
+        **_RESPONSES_AUTH,
+        404: {"description": "Operação não encontrada", "model": ErrorResponse},
+    },
+    dependencies=[_ADMIN_MECANICO],
+)
+async def obter_operacao_reserva_item(
+    ordem_servico_id: UUID,
+    operation_id: UUID,
+    usecase: ObterReservaItemSagaDep,
+) -> ReservaItemSagaResponse:
+    try:
+        return await usecase.execute(ordem_servico_id, operation_id)
+    except ReservaItemSagaNaoEncontradaError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

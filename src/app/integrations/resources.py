@@ -162,11 +162,19 @@ class RecursosOperacoesPort(Protocol):
     ) -> ConsumirReservaResult: ...
 
 
+class RecursoCatalogoPort(Protocol):
+    async def obter_recurso_por_id(self, recurso_id: ID) -> RecursoSnapshot | None: ...
+
+
 class ServicoCatalogoPort(Protocol):
     async def obter_por_id(self, servico_id: ID) -> ServicoSnapshot | None: ...
 
 
-class RecursosIndisponiveisAdapter(RecursosOperacoesPort, ServicoCatalogoPort):
+class RecursosIndisponiveisAdapter(
+    RecursosOperacoesPort,
+    RecursoCatalogoPort,
+    ServicoCatalogoPort,
+):
     """Fail-closed até REST, mensageria e coordenações da Etapa 2 existirem."""
 
     _MENSAGEM = "Coordenação com Recursos planejada para a Etapa 2; operação não concluída"
@@ -189,6 +197,11 @@ class RecursosIndisponiveisAdapter(RecursosOperacoesPort, ServicoCatalogoPort):
     ) -> ConsumirReservaResult:
         raise ResourceDependencyUnavailable(self._MENSAGEM)
 
+    async def obter_recurso_por_id(self, recurso_id: ID) -> RecursoSnapshot | None:
+        raise ResourceDependencyUnavailable(
+            "Consulta de peça em Recursos indisponível; operação não concluída"
+        )
+
     async def obter_por_id(self, servico_id: ID) -> ServicoSnapshot | None:
         raise ResourceDependencyUnavailable(
             "Integração com catálogo planejada para a Etapa 2; operação não concluída"
@@ -204,6 +217,16 @@ class _ServiceSnapshotResponse(BaseModel):
     price: Decimal = Field(ge=0)
     estimated_minutes: int = Field(gt=0)
     active: bool
+    version: int = Field(ge=1)
+
+
+class _ResourceSnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resource_id: UUID
+    name: str
+    description: str | None
+    unit_price: Decimal = Field(ge=0)
     version: int = Field(ge=1)
 
 
@@ -275,4 +298,53 @@ class RecursosHTTPAdapter(RecursosIndisponiveisAdapter):
             valor_base=payload.price,
             tempo_medio_minutos=payload.estimated_minutes,
             ativo=payload.active,
+        )
+
+    async def obter_recurso_por_id(self, recurso_id: ID) -> RecursoSnapshot | None:
+        token = await self._token_provider.get_token(
+            audience=self._service_name,
+            scopes={"resources:catalog:read"},
+            correlation_id=self._correlation_id,
+        )
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    f"/internal/v1/catalog/resources/{recurso_id.value}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Correlation-ID": self._correlation_id,
+                    },
+                )
+        except httpx.TimeoutException as exc:
+            raise DependencyTimeoutError("Timeout ao consultar peça") from exc
+        except httpx.RequestError as exc:
+            raise DependencyUnavailableError("Catálogo de Recursos indisponível") from exc
+
+        validate_correlation(response, self._correlation_id)
+        if response.status_code == 404:
+            return None
+        if response.status_code == 401:
+            raise DependencyAuthenticationError("Token recusado por Recursos")
+        if response.status_code == 403:
+            raise DependencyAuthorizationError("Escopo recusado por Recursos")
+        if response.status_code >= 500:
+            raise DependencyUnavailableError("Catálogo de Recursos indisponível")
+        if response.status_code != 200:
+            raise DependencyContractError("Resposta inesperada do catálogo de peças")
+        try:
+            payload = _ResourceSnapshotResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise DependencyContractError("Snapshot de peça incompatível") from exc
+        if payload.resource_id != recurso_id.value:
+            raise DependencyContractError("Catálogo respondeu identificador divergente")
+        return RecursoSnapshot(
+            id=ID(payload.resource_id),
+            tipo=ItemType.PECA,
+            nome=payload.name,
+            descricao=payload.description,
+            valor_unitario=payload.unit_price,
         )

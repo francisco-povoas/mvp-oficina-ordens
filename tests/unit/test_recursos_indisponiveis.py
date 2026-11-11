@@ -92,3 +92,18 @@ def test_indisponibilidade_controlada_vira_503_e_nao_500() -> None:
 def test_openapi_publica_503_nas_operacoes_distribuidas(path: str, method: str) -> None:
     document = create_app(Settings(environment="test")).openapi()
     assert "503" in document["paths"][path][method]["responses"]
+
+
+def test_inclusao_de_item_e_assincrona_e_exige_idempotency_key() -> None:
+    operation = create_app(Settings(environment="test")).openapi()["paths"][
+        "/api/v1/ordens-servico/{ordem_servico_id}/itens"
+    ]["post"]
+
+    assert "202" in operation["responses"]
+    header = next(
+        parameter
+        for parameter in operation["parameters"]
+        if parameter["name"] == "Idempotency-Key"
+    )
+    assert header["in"] == "header"
+    assert header["required"] is True

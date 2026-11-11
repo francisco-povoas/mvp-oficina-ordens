@@ -8,15 +8,14 @@ from uuid import uuid4
 import pytest
 
 from app.integrations.resources import (
-    ItemType as TipoItemEstoque,
-)
-from app.integrations.resources import (
+    ItemEstoqueNaoEncontradoError,
     LiberarReservaResult,
     RecursoSnapshot,
-    ReservaItemStatus,
-    ReservarItemResult,
     ResourceDependencyUnavailable,
     ServicoNaoEncontradoError,
+)
+from app.integrations.resources import (
+    ItemType as TipoItemEstoque,
 )
 from app.integrations.resources import (
     ServicoSnapshot as Servico,
@@ -30,6 +29,7 @@ from app.modules.ordens_servico.application.dtos.ordem_servico import (
 )
 from app.modules.ordens_servico.application.use_cases.adicionar_item_na_ordem_servico import (
     AdicionarItemNaOrdemServicoUseCase,
+    _request_hash,
 )
 from app.modules.ordens_servico.application.use_cases.adicionar_servico_na_ordem_servico import (
     AdicionarServicoNaOrdemServicoUseCase,
@@ -69,6 +69,10 @@ from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
 from app.modules.ordens_servico.domain.entities.ordem_servico_servico import (
     OrdemServicoServico,
 )
+from app.modules.ordens_servico.domain.entities.reserva_item_saga import (
+    EstadoReservaItemSaga,
+    ReservaItemSaga,
+)
 from app.modules.ordens_servico.domain.exceptions import (
     ItemJaAdicionadoNaOrdemServicoError,
     OrdemServicoInvalidaError,
@@ -76,6 +80,7 @@ from app.modules.ordens_servico.domain.exceptions import (
     OrdemServicoNaoEncontradaError,
     OrdemServicoServicoNaoEncontradoError,
     OrdemServicoTransicaoInvalidaError,
+    ReservaItemSagaIdempotenciaConflitanteError,
     ServicoJaAdicionadoNaOrdemServicoError,
 )
 from app.modules.ordens_servico.domain.filters.ordem_servico import (
@@ -199,6 +204,11 @@ def mock_os_repo():
 def mock_uow(mock_os_repo):
     uow = MagicMock()
     uow.ordem_servico_repo = mock_os_repo
+    uow.reserva_item_saga_repo = MagicMock()
+    uow.reserva_item_saga_repo.salvar = AsyncMock()
+    uow.reserva_item_saga_repo.obter_por_chave_idempotencia = AsyncMock(return_value=None)
+    uow.outbox = MagicMock()
+    uow.outbox.add = AsyncMock()
     uow.commit = AsyncMock()
     uow.rollback = AsyncMock()
     uow.__aenter__ = AsyncMock(return_value=uow)
@@ -213,6 +223,7 @@ def mock_recursos():
     recursos.liberar_reserva = AsyncMock()
     recursos.receber_item_pendente = AsyncMock()
     recursos.consumir_reserva = AsyncMock()
+    recursos.obter_recurso_por_id = AsyncMock()
     return recursos
 
 
@@ -602,60 +613,129 @@ class TestRemoverServicoDaOrdemServicoUseCase:
 # ---------------------------------------------------------------------------
 
 class TestAdicionarItemNaOrdemServicoUseCase:
-    async def test_consolida_reserva_decidida_por_recursos(self, mock_uow, mock_recursos):
+    async def test_inicia_saga_e_outbox_sem_criar_item(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         recurso = _recurso_fake()
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_recursos.reservar_item.side_effect = lambda command: ReservarItemResult(
-            operation_id=command.operation_id,
-            recurso_id=command.recurso_id,
-            quantidade=command.quantidade,
-            status=ReservaItemStatus.RESERVADO,
-            recurso=recurso,
-            reservation_id=uuid4(),
-        )
+        mock_recursos.obter_recurso_por_id.return_value = recurso
 
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(recurso.id), quantidade=3)
-        resultado = await uc.execute(str(os.id), dto)
+        correlacao = uuid4()
+        resultado = await uc.execute(
+            str(os.id),
+            dto,
+            idempotency_key="request-123",
+            correlation_id=correlacao,
+        )
 
-        assert resultado.status == StatusItemNaOS.RESERVADO.value
-        assert resultado.quantidade == 3
-        mock_recursos.reservar_item.assert_awaited_once()
-        mock_uow.ordem_servico_repo.salvar_item.assert_awaited_once()
+        assert resultado.estado == EstadoReservaItemSaga.PENDING.value
+        assert resultado.operation_id
+        mock_recursos.obter_recurso_por_id.assert_awaited_once_with(recurso.id)
+        saga = mock_uow.reserva_item_saga_repo.salvar.await_args.args[0]
+        assert str(saga.operation_id) == resultado.operation_id
+        assert saga.resource_id == recurso.id.value
+        mensagem = mock_uow.outbox.add.await_args.args[0]
+        assert mensagem.aggregate_id == saga.operation_id
+        assert mensagem.saga_id == saga.id
+        assert mensagem.event_type == "ReserveItem.v1"
+        assert mensagem.correlation_id == correlacao
+        assert mensagem.payload["resource_snapshot"]["name"] == recurso.nome
+        mock_uow.ordem_servico_repo.salvar_item.assert_not_awaited()
         ordem_atualizada = mock_uow.ordem_servico_repo.atualizar.await_args.args[0]
         assert ordem_atualizada.version == os.version + 1
 
-    async def test_consolida_backorder_decidido_por_recursos(self, mock_uow, mock_recursos):
+    async def test_requisicao_repetida_devolve_mesma_operacao(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         recurso = _recurso_fake()
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_recursos.reservar_item.side_effect = lambda command: ReservarItemResult(
-            operation_id=command.operation_id,
-            recurso_id=command.recurso_id,
-            quantidade=command.quantidade,
-            status=ReservaItemStatus.A_RECEBER,
-            recurso=recurso,
+        existente = ReservaItemSaga.iniciar(
+            saga_id=uuid4(),
+            operation_id=uuid4(),
+            ordem_servico_id=os.id.value,
+            ordem_servico_item_id=uuid4(),
+            resource_id=recurso.id.value,
+            quantity=3,
+            correlation_id=uuid4(),
+            idempotency_key="request-123",
+            request_hash=_request_hash(
+                ordem_servico_id=os.id.value,
+                resource_id=recurso.id.value,
+                quantity=3,
+            ),
+            reserve_message_id=uuid4(),
         )
+        mock_uow.reserva_item_saga_repo.obter_por_chave_idempotencia.return_value = existente
 
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(recurso.id), quantidade=3)
-        resultado = await uc.execute(str(os.id), dto)
+        resultado = await uc.execute(
+            str(os.id),
+            dto,
+            idempotency_key="request-123",
+            correlation_id=uuid4(),
+        )
 
-        assert resultado.status == StatusItemNaOS.A_RECEBER.value
+        assert resultado.operation_id == str(existente.operation_id)
+        mock_recursos.obter_recurso_por_id.assert_not_awaited()
+        mock_uow.outbox.add.assert_not_awaited()
+        mock_uow.ordem_servico_repo.atualizar.assert_not_awaited()
+
+    async def test_mesma_chave_com_payload_divergente_gera_conflito(
+        self, mock_uow, mock_recursos
+    ):
+        os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
+        recurso = _recurso_fake()
+        mock_uow.ordem_servico_repo.obter_por_id.return_value = os
+        mock_uow.reserva_item_saga_repo.obter_por_chave_idempotencia.return_value = (
+            ReservaItemSaga.iniciar(
+                saga_id=uuid4(),
+                operation_id=uuid4(),
+                ordem_servico_id=os.id.value,
+                ordem_servico_item_id=uuid4(),
+                resource_id=recurso.id.value,
+                quantity=1,
+                correlation_id=uuid4(),
+                idempotency_key="request-123",
+                request_hash="a" * 64,
+                reserve_message_id=uuid4(),
+            )
+        )
+
+        with pytest.raises(ReservaItemSagaIdempotenciaConflitanteError):
+            await AdicionarItemNaOrdemServicoUseCase(
+                uow=mock_uow, recursos=mock_recursos
+            ).execute(
+                str(os.id),
+                AdicionarItemNaOSRequest(item_estoque_id=str(recurso.id), quantidade=2),
+                idempotency_key="request-123",
+                correlation_id=uuid4(),
+            )
+
+        mock_uow.outbox.add.assert_not_awaited()
 
     async def test_quantidade_zero_levanta_erro(self, mock_uow, mock_recursos):
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=0)
         with pytest.raises(OrdemServicoInvalidaError):
-            await uc.execute(str(uuid4()), dto)
-        mock_recursos.reservar_item.assert_not_awaited()
+            await uc.execute(
+                str(uuid4()),
+                dto,
+                idempotency_key="request-123",
+                correlation_id=uuid4(),
+            )
+        mock_recursos.obter_recurso_por_id.assert_not_awaited()
 
     async def test_os_nao_encontrada_levanta_erro(self, mock_uow, mock_recursos):
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
         with pytest.raises(OrdemServicoNaoEncontradaError):
-            await uc.execute(str(uuid4()), dto)
+            await uc.execute(
+                str(uuid4()),
+                dto,
+                idempotency_key="request-123",
+                correlation_id=uuid4(),
+            )
 
     async def test_os_status_errado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.RECEBIDA)
@@ -664,7 +744,12 @@ class TestAdicionarItemNaOrdemServicoUseCase:
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
         with pytest.raises(OrdemServicoTransicaoInvalidaError):
-            await uc.execute(str(os.id), dto)
+            await uc.execute(
+                str(os.id),
+                dto,
+                idempotency_key="request-123",
+                correlation_id=uuid4(),
+            )
 
     async def test_item_duplicado_levanta_erro(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
@@ -677,21 +762,29 @@ class TestAdicionarItemNaOrdemServicoUseCase:
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
         dto = AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1)
         with pytest.raises(ItemJaAdicionadoNaOrdemServicoError):
-            await uc.execute(str(os.id), dto)
+            await uc.execute(
+                str(os.id),
+                dto,
+                idempotency_key="request-123",
+                correlation_id=uuid4(),
+            )
 
-    async def test_indisponibilidade_nao_cria_item_local(self, mock_uow, mock_recursos):
+    async def test_recurso_ausente_nao_cria_saga(self, mock_uow, mock_recursos):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         mock_uow.ordem_servico_repo.obter_por_id.return_value = os
-        mock_recursos.reservar_item.side_effect = ResourceDependencyUnavailable("Etapa 2")
+        mock_recursos.obter_recurso_por_id.return_value = None
         uc = AdicionarItemNaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
 
-        with pytest.raises(ResourceDependencyUnavailable):
+        with pytest.raises(ItemEstoqueNaoEncontradoError):
             await uc.execute(
                 str(os.id),
                 AdicionarItemNaOSRequest(item_estoque_id=str(uuid4()), quantidade=1),
+                idempotency_key="request-123",
+                correlation_id=uuid4(),
             )
 
-        mock_uow.ordem_servico_repo.salvar_item.assert_not_awaited()
+        mock_uow.reserva_item_saga_repo.salvar.assert_not_awaited()
+        mock_uow.outbox.add.assert_not_awaited()
         mock_uow.ordem_servico_repo.atualizar.assert_not_awaited()
 
 

@@ -7,6 +7,7 @@ from fastapi import Depends, Request
 
 from app.integrations.finance import FinanceHTTPClient, FinanceStatusPort
 from app.integrations.resources import (
+    RecursoCatalogoPort,
     RecursosHTTPAdapter,
     RecursosIndisponiveisAdapter,
     RecursosOperacoesPort,
@@ -27,6 +28,7 @@ from app.modules.ordens_servico.application.use_cases import (
     ListarOrdensServicoUseCase,
     ObterEstatisticaTempoExecucaoServicoUseCase,
     ObterOrdemServicoPorIdUseCase,
+    ObterReservaItemSagaUseCase,
     RegistrarDiagnosticoOrdemServicoUseCase,
     RegistrarTempoExecutadoServicoUseCase,
     RemoverItemDaOrdemServicoUseCase,
@@ -38,8 +40,14 @@ from app.modules.ordens_servico.domain.ports.ordem_servico_repo import (
 from app.modules.ordens_servico.domain.ports.ordem_servico_uow import (
     OrdemServicoUnitOfWork as OrdemServicoUoWProtocol,
 )
+from app.modules.ordens_servico.domain.ports.reserva_item_saga_repo import (
+    ReservaItemSagaRepo as ReservaItemSagaRepoProtocol,
+)
 from app.modules.ordens_servico.infrastructure.db.repositories.ordem_servico_repo import (
     OrdemServicoRepo,
+)
+from app.modules.ordens_servico.infrastructure.db.repositories.reserva_item_saga_repo import (
+    ReservaItemSagaRepo,
 )
 from app.modules.ordens_servico.infrastructure.db.uow.ordem_servico_uow import (
     ordem_servico_uow_factory,
@@ -75,6 +83,7 @@ def get_recursos_adapter(request: Request) -> RecursosIndisponiveisAdapter:
 
 
 _RecursosOperacoesDep = Annotated[RecursosOperacoesPort, Depends(get_recursos_adapter)]
+_RecursoCatalogoDep = Annotated[RecursoCatalogoPort, Depends(get_recursos_adapter)]
 
 
 def get_financeiro_adapter(request: Request) -> FinanceStatusPort:
@@ -102,6 +111,12 @@ def get_ordem_servico_uow(
     return ordem_servico_uow_factory(session)  # type: ignore[return-value]
 
 
+def get_reserva_item_saga_repo(
+    session: Annotated[DBSession, Depends(get_db_session)],
+) -> ReservaItemSagaRepoProtocol:
+    return ReservaItemSagaRepo(session)  # type: ignore[return-value]
+
+
 def get_cliente_repo(
     session: Annotated[DBSession, Depends(get_db_session)],
 ) -> ClienteRepo:
@@ -119,6 +134,7 @@ def get_servico_repo(request: Request) -> ServicoCatalogoPort:
 
 
 _RepoDep = Annotated[OrdemServicoRepoProtocol, Depends(get_ordem_servico_repo)]
+_SagaRepoDep = Annotated[ReservaItemSagaRepoProtocol, Depends(get_reserva_item_saga_repo)]
 _UoWDep = Annotated[OrdemServicoUoWProtocol, Depends(get_ordem_servico_uow)]
 _ClienteRepoDep = Annotated[ClienteRepo, Depends(get_cliente_repo)]
 _VeiculoRepoDep = Annotated[VeiculoRepo, Depends(get_veiculo_repo)]
@@ -167,9 +183,13 @@ def get_remover_servico(uow: _UoWDep) -> RemoverServicoDaOrdemServicoUseCase:
 
 
 def get_adicionar_item(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
+    uow: _UoWDep, recursos: _RecursoCatalogoDep
 ) -> AdicionarItemNaOrdemServicoUseCase:
     return AdicionarItemNaOrdemServicoUseCase(uow=uow, recursos=recursos)
+
+
+def get_obter_reserva_item_saga(repo: _SagaRepoDep) -> ObterReservaItemSagaUseCase:
+    return ObterReservaItemSagaUseCase(repo=repo)
 
 
 def get_remover_item(
@@ -244,6 +264,10 @@ RegistrarDiagnosticoDep = Annotated[RegistrarDiagnosticoOrdemServicoUseCase, Dep
 AdicionarServicoDep = Annotated[AdicionarServicoNaOrdemServicoUseCase, Depends(get_adicionar_servico)]
 RemoverServicoDep = Annotated[RemoverServicoDaOrdemServicoUseCase, Depends(get_remover_servico)]
 AdicionarItemDep = Annotated[AdicionarItemNaOrdemServicoUseCase, Depends(get_adicionar_item)]
+ObterReservaItemSagaDep = Annotated[
+    ObterReservaItemSagaUseCase,
+    Depends(get_obter_reserva_item_saga),
+]
 RemoverItemDep = Annotated[RemoverItemDaOrdemServicoUseCase, Depends(get_remover_item)]
 ConcluirDiagnosticoDep = Annotated[ConcluirDiagnosticoOrdemServicoUseCase, Depends(get_concluir_diagnostico)]
 ConfirmarRecebimentoItemDep = Annotated[ConfirmarRecebimentoItemDaOrdemServicoUseCase, Depends(get_confirmar_recebimento_item)]

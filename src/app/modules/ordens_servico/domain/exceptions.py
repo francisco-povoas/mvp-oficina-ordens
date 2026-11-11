@@ -106,3 +106,15 @@ class ReservaItemSagaConflitoDeVersaoError(DomainException):
 
     pass
 
+
+class ReservaItemSagaIdempotenciaConflitanteError(DomainException):
+    """A mesma chave foi reutilizada com uma requisição semanticamente diferente."""
+
+    pass
+
+
+class ReservaItemSagaNaoEncontradaError(DomainException):
+    """A operação de reserva solicitada não pertence à OS informada."""
+
+    pass
+
