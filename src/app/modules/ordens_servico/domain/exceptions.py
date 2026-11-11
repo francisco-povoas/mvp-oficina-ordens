@@ -118,3 +118,9 @@ class ReservaItemSagaNaoEncontradaError(DomainException):
 
     pass
 
+
+class ResultadoReservaItemSagaInvalidoError(DomainException):
+    """O resultado recebido não corresponde ao comando pendente da Saga."""
+
+    pass
+
