@@ -54,6 +54,7 @@ SQS_ENDPOINT = os.environ["SQS_ENDPOINT_URL"]
 COMMAND_QUEUE = os.environ["SQS_ORDENS_TO_RECURSOS_URL"]
 RESULT_QUEUE = os.environ["SQS_RECURSOS_TO_ORDENS_URL"]
 READY_FILE = Path(os.environ["SAGA_READY_FILE"])
+FINANCE_READY_FILE = Path(os.environ["FINANCE_READY_FILE"])
 FINANCEIRO_BASE_URL = os.environ["FINANCEIRO_BASE_URL"]
 FINANCIAL_QUEUE = os.environ["SQS_FINANCEIRO_TO_ORDENS_URL"]
 DYNAMODB_ENDPOINT = os.environ["DYNAMODB_ENDPOINT_URL"]
@@ -357,6 +358,33 @@ def _user_token() -> str:
         roles=["Administrador"],
         audience="mvp-oficina-users",
     )["access_token"]
+
+
+async def _run_financial_reconciliation(
+    *, finance_base_url: str | None = None
+) -> tuple[str, str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RECONCILIATION_STALE_AFTER_SECONDS": "0",
+            "RECONCILIATION_RECHECK_SECONDS": "1",
+            "RECONCILIATION_BATCH_SIZE": "20",
+            "RECONCILIATION_MAX_BATCHES": "5",
+        }
+    )
+    if finance_base_url is not None:
+        environment["FINANCE_BASE_URL"] = finance_base_url
+    process = await asyncio.create_subprocess_exec(
+        "python",
+        "-m",
+        "app.financial_reconciliation_worker",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=environment,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode()
+    return stdout.decode(), stderr.decode()
 
 
 async def _create_and_communicate_quote(
@@ -769,6 +797,253 @@ async def test_fluxos_distribuidos_persistem_efeitos_e_idempotencia() -> None:
             "FROM inbox_message",
         )
         assert tuple(ordens_inbox.values()) == (8, 8)
+    finally:
+        await ordens_engine.dispose()
+        await recursos_engine.dispose()
+
+
+async def test_reconciliacao_recupera_fatos_suprimidos_e_eventos_tardios() -> None:
+    ordens_engine, ordens_factory = _factory(ORDENS_DATABASE_URL)
+    recursos_engine, recursos_factory = _factory(RECURSOS_DATABASE_URL)
+    headers = {
+        "Authorization": f"Bearer {_user_token()}",
+        "X-Correlation-ID": str(uuid4()),
+    }
+    try:
+        async with httpx.AsyncClient(base_url=FINANCEIRO_BASE_URL, timeout=10) as client:
+            await _wait_for_api(client)
+
+            paid_order = await _seed_financial_order(ordens_factory, "reconcile-paid")
+            paid_quote = await _create_and_communicate_quote(
+                client, headers, paid_order
+            )
+            approved = await client.post(
+                f"/api/v1/quotes/{paid_quote['quote_id']}/approve",
+                headers=headers,
+            )
+            assert approved.status_code == 200, approved.text
+            async with ordens_factory() as session, session.begin():
+                await session.exec(
+                    text(
+                        "UPDATE ordem_servico SET status = 'FINALIZADA', "
+                        "version = version + 1, atualizado_em = :now WHERE id = :order_id"
+                    ),
+                    params={"now": datetime.now(UTC), "order_id": paid_order},
+                )
+            payment = await client.post(
+                "/api/v1/payments",
+                json={
+                    "quote_id": paid_quote["quote_id"],
+                    "method": "PIX",
+                    "amount": paid_quote["total"],
+                },
+                headers={**headers, "Idempotency-Key": f"reconcile-{paid_order}"},
+            )
+            assert payment.status_code == 201, payment.text
+            confirmed = await client.post(
+                f"/api/v1/payments/{payment.json()['payment_id']}/simulate-confirm",
+                json={"provider_reference": f"reconcile-{paid_order}"},
+                headers=headers,
+            )
+            assert confirmed.status_code == 200, confirmed.text
+
+            async with ordens_factory() as session:
+                rejected_order = await _seed_order(session, "reconcile-rejected")
+            reserved = await AdicionarItemNaOrdemServicoUseCase(
+                uow=OrdemServicoUnitOfWork(ordens_factory()),
+                recursos=_Catalog(RESOURCE_IDS["reserved"]),
+            ).execute(
+                str(rejected_order),
+                AdicionarItemNaOSRequest(
+                    item_estoque_id=str(RESOURCE_IDS["reserved"]),
+                    quantidade=1,
+                ),
+                idempotency_key=f"reconcile-rejection-{rejected_order}",
+                correlation_id=uuid4(),
+            )
+            await _wait_for_terminal(
+                ordens_factory,
+                {"reconcile-rejected": UUID(reserved.operation_id)},
+            )
+            now = datetime.now(UTC)
+            async with ordens_factory() as session, session.begin():
+                await session.exec(
+                    text(
+                        "UPDATE cliente SET email = :email WHERE id = "
+                        "(SELECT cliente_id FROM ordem_servico WHERE id = :order_id)"
+                    ),
+                    params={
+                        "email": "reconcile-rejected@example.com",
+                        "order_id": rejected_order,
+                    },
+                )
+                await session.exec(
+                    text(
+                        "UPDATE ordem_servico SET status = 'DIAGNOSTICO_CONCLUIDO', "
+                        "diagnostico_concluido_em = :now, atualizado_em = :now, "
+                        "version = version + 1 WHERE id = :order_id"
+                    ),
+                    params={"now": now, "order_id": rejected_order},
+                )
+                await session.exec(
+                    text(
+                        "INSERT INTO ordem_servico_servico "
+                        "(id, ordem_servico_id, servico_id, nome_servico, "
+                        "descricao_servico, valor_unitario, tempo_estimado_minutos, "
+                        "tempo_executado_minutos, observacao, cancelado) VALUES "
+                        "(:id, :order_id, :service_id, 'Diagnóstico', "
+                        "'Reconciliação', 100.00, 60, NULL, NULL, false)"
+                    ),
+                    params={
+                        "id": uuid4(),
+                        "order_id": rejected_order,
+                        "service_id": uuid4(),
+                    },
+                )
+            rejected_quote = await _create_and_communicate_quote(
+                client, headers, rejected_order
+            )
+            rejected = await client.post(
+                f"/api/v1/quotes/{rejected_quote['quote_id']}/reject",
+                json={"reason": "Recusa recuperada por reconciliação"},
+                headers=headers,
+            )
+            assert rejected.status_code == 200, rejected.text
+
+            retry_order = await _seed_financial_order(ordens_factory, "reconcile-retry")
+            retry_quote = await _create_and_communicate_quote(
+                client, headers, retry_order
+            )
+            retry_approved = await client.post(
+                f"/api/v1/quotes/{retry_quote['quote_id']}/approve",
+                headers=headers,
+            )
+            assert retry_approved.status_code == 200, retry_approved.text
+
+            await _run_financial_reconciliation(
+                finance_base_url="http://127.0.0.1:9"
+            )
+            unavailable = await _query_one(
+                ordens_factory,
+                "SELECT status FROM financial_reconciliation WHERE order_id = :order_id",
+                order_id=retry_order,
+            )
+            assert unavailable["status"] == "TEMPORARILY_UNAVAILABLE"
+
+            await _run_financial_reconciliation()
+            paid_projection = await _wait_for_order_state(
+                ordens_factory,
+                paid_order,
+                status="FINALIZADA",
+                quote_status="APROVADO",
+                payment_status="CONFIRMED",
+            )
+            await _wait_for_order_state(
+                ordens_factory,
+                retry_order,
+                status="APROVADA",
+                quote_status="APROVADO",
+            )
+            rejected_projection = await _wait_for_order_state(
+                ordens_factory,
+                rejected_order,
+                status="ENCERRADA",
+                quote_status="RECUSADO",
+            )
+            released = await _query_one(
+                recursos_factory,
+                "SELECT status FROM reserva_estoque WHERE operation_id = :operation",
+                operation=UUID(reserved.operation_id),
+            )
+            physical = await _query_one(
+                ordens_factory,
+                "SELECT count(*) AS total FROM distributed_operation "
+                "WHERE ordem_servico_id = :order_id AND operation_type = 'CONSUME'",
+                order_id=paid_order,
+            )
+            assert released["status"] == "LIBERADA"
+            assert physical["total"] == 0
+
+            concurrent_order = await _seed_financial_order(
+                ordens_factory, "reconcile-concurrent"
+            )
+            concurrent_quote = await _create_and_communicate_quote(
+                client, headers, concurrent_order
+            )
+            async with ordens_factory() as session, session.begin():
+                await session.exec(
+                    text(
+                        "UPDATE ordem_servico SET status = 'AGUARDANDO_APROVACAO', "
+                        "quote_id = :quote_id, quote_status = 'COMUNICADO', "
+                        "quote_version = :quote_version, quote_total = :total, "
+                        "quote_communicated_at = :communicated_at, "
+                        "version = version + 1, atualizado_em = :now "
+                        "WHERE id = :order_id"
+                    ),
+                    params={
+                        "quote_id": UUID(concurrent_quote["quote_id"]),
+                        "quote_version": concurrent_quote["version"],
+                        "total": Decimal(concurrent_quote["total"]),
+                        "communicated_at": datetime.fromisoformat(
+                            concurrent_quote["communicated_at"]
+                        ),
+                        "now": datetime.now(UTC),
+                        "order_id": concurrent_order,
+                    },
+                )
+            concurrent_approved = await client.post(
+                f"/api/v1/quotes/{concurrent_quote['quote_id']}/approve",
+                headers=headers,
+            )
+            assert concurrent_approved.status_code == 200, concurrent_approved.text
+            before_concurrency = await _query_one(
+                ordens_factory,
+                "SELECT version FROM ordem_servico WHERE id = :order_id",
+                order_id=concurrent_order,
+            )
+            await asyncio.gather(
+                _run_financial_reconciliation(),
+                asyncio.to_thread(
+                    FINANCE_READY_FILE.write_text, "ready", encoding="utf-8"
+                ),
+            )
+            concurrent_projection = await _wait_for_order_state(
+                ordens_factory,
+                concurrent_order,
+                status="APROVADA",
+                quote_status="APROVADO",
+            )
+            assert concurrent_projection["version"] == before_concurrency["version"] + 1
+
+            expected_business_keys = [
+                f"quote-decision:{paid_quote['quote_id']}:v3",
+                f"payment-confirmed:{payment.json()['payment_id']}",
+                f"quote-decision:{rejected_quote['quote_id']}:v3",
+                f"quote-decision:{concurrent_quote['quote_id']}:v3",
+            ]
+            deadline = asyncio.get_running_loop().time() + 40
+            while asyncio.get_running_loop().time() < deadline:
+                effects = await _query_one(
+                    ordens_factory,
+                    "SELECT count(*) AS total FROM inbox_effect "
+                    "WHERE consumer_name = 'ordens.financial-events.v1' "
+                    "AND business_key = ANY(:keys) AND status = 'PROCESSED'",
+                    keys=expected_business_keys,
+                )
+                if effects["total"] == len(expected_business_keys):
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                raise AssertionError("Eventos financeiros tardios não foram processados")
+
+            after_late_events = await _query_all(
+                ordens_factory,
+                "SELECT id, version FROM ordem_servico WHERE id = ANY(:order_ids)",
+                order_ids=[paid_order, rejected_order],
+            )
+            versions = {row["id"]: row["version"] for row in after_late_events}
+            assert versions[paid_order] == paid_projection["version"]
+            assert versions[rejected_order] == rejected_projection["version"]
     finally:
         await ordens_engine.dispose()
         await recursos_engine.dispose()

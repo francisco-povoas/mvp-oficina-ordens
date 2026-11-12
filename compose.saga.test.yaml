@@ -14,6 +14,12 @@ x-ordens-environment: &ordens-environment
   CONSUMER_WAIT_TIME_SECONDS: "1"
   CONSUMER_VISIBILITY_TIMEOUT_SECONDS: "10"
   CONSUMER_HEARTBEAT_SECONDS: "1"
+  INTERNAL_AUTH_URL: http://ordens-api:8000/internal/v1/auth/token
+  FINANCE_BASE_URL: http://financeiro-api:8000
+  SERVICE_CLIENT_ID: mvp-oficina-ordens
+  SERVICE_CLIENT_SECRET: financeiro-local-secret
+  RECONCILIATION_STALE_AFTER_SECONDS: "0"
+  RECONCILIATION_RECHECK_SECONDS: "1"
 
 services:
   ordens-db:
@@ -117,7 +123,7 @@ services:
     command: uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
     environment:
       <<: *ordens-environment
-      SERVICE_CLIENTS_JSON: '{"mvp-oficina-financeiro":{"secret_hash":"$$2b$$04$$GQcP0R7hj0drm8Tv10ze8ujRWGslA7x6Y.IwvUeiHZewHQ9jlxRvO","grants":{"mvp-oficina-ordens":["orders:quote-context:read","orders:payment-context:read"]}}}'
+      SERVICE_CLIENTS_JSON: '{"mvp-oficina-financeiro":{"secret_hash":"$$2b$$04$$GQcP0R7hj0drm8Tv10ze8ujRWGslA7x6Y.IwvUeiHZewHQ9jlxRvO","grants":{"mvp-oficina-ordens":["orders:quote-context:read","orders:payment-context:read"]}},"mvp-oficina-ordens":{"secret_hash":"$$2b$$04$$GQcP0R7hj0drm8Tv10ze8ujRWGslA7x6Y.IwvUeiHZewHQ9jlxRvO","grants":{"mvp-oficina-financeiro":["finance:status:read"]}}}'
     depends_on:
       ordens-migrate:
         condition: service_completed_successfully
@@ -141,7 +147,7 @@ services:
     command:
       - sh
       - -c
-      - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.publisher
+      - while [ ! -f /state/finance-ready ]; do sleep 0.1; done; python -m app.publisher
     environment: *financeiro-environment
     volumes:
       - saga-state:/state
@@ -242,6 +248,7 @@ services:
       <<: *ordens-environment
       RECURSOS_DATABASE_URL: postgresql+asyncpg://recursos:recursos@recursos-db:5432/recursos_saga_test
       SAGA_READY_FILE: /state/ready
+      FINANCE_READY_FILE: /state/finance-ready
       FINANCEIRO_BASE_URL: http://financeiro-api:8000
       AWS_ACCESS_KEY_ID: localdynamodb
       AWS_SECRET_ACCESS_KEY: localdynamodb
