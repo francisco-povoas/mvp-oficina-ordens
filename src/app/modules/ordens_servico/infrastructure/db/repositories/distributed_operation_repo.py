@@ -56,14 +56,21 @@ class PostgresDistributedOperationRepo:
         return self._to_entity(model) if model else None
 
     async def list_pending_for_order(
-        self, ordem_servico_id: UUID
+        self,
+        ordem_servico_id: UUID,
+        operation_type: DistributedOperationType | None = None,
     ) -> list[DistributedOperation]:
+        filters = [
+            DistributedOperationModel.ordem_servico_id == ordem_servico_id,
+            DistributedOperationModel.state == DistributedOperationState.PENDING.value,
+        ]
+        if operation_type is not None:
+            filters.append(
+                DistributedOperationModel.operation_type == operation_type.value
+            )
         result = await self.session.exec(
             select(DistributedOperationModel)
-            .where(
-                DistributedOperationModel.ordem_servico_id == ordem_servico_id,
-                DistributedOperationModel.state == DistributedOperationState.PENDING.value,
-            )
+            .where(*filters)
             .order_by(
                 DistributedOperationModel.created_at,
                 DistributedOperationModel.operation_id,

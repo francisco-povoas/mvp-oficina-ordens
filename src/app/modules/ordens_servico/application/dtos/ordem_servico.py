@@ -93,6 +93,15 @@ class DistributedOperationResponse:
 
 
 @dataclass(frozen=True, kw_only=True)
+class DeliveryOperationResponse:
+    ordem_servico_id: str
+    order_status: str
+    state: str
+    operation_ids: list[str]
+    status_url: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class OrdemServicoResumoResponse:
     """Resposta resumida — usada na listagem."""
 

@@ -70,6 +70,15 @@ class OrdemServicoRepo:
             return None
         return self._os_to_entity(model)
 
+    async def obter_por_id_com_lock(self, _id: ID) -> Optional[OrdemServico]:
+        result = await self.session.exec(
+            select(OrdemServicoModel)
+            .where(OrdemServicoModel.id == _id.value)
+            .with_for_update()
+        )
+        model = result.first()
+        return self._os_to_entity(model) if model else None
+
     async def atualizar(self, os: OrdemServico) -> Optional[OrdemServico]:
         versao_anterior = os.version - 1
         if versao_anterior < 1:

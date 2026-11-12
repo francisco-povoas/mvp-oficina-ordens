@@ -25,7 +25,9 @@ class DistributedOperationRepo(Protocol):
     ) -> DistributedOperation | None: ...
 
     async def list_pending_for_order(
-        self, ordem_servico_id: UUID
+        self,
+        ordem_servico_id: UUID,
+        operation_type: DistributedOperationType | None = None,
     ) -> list[DistributedOperation]: ...
 
     async def get_latest_completed_for_item(

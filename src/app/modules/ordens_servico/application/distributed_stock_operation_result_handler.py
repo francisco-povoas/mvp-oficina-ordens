@@ -26,18 +26,25 @@ from app.shared.value_objects.id import ID
 class DistributedStockOperationResultHandler:
     """Usa a sessão transacional já aberta pela Inbox de Ordens."""
 
-    _SUPPORTED_TYPES = {"ReservationReleased", "BackorderedItemReceived"}
+    _SUPPORTED_TYPES = {
+        "ReservationReleased",
+        "BackorderedItemReceived",
+        "ReservationConsumed",
+    }
     _OPERATION_TYPES = {
         "ReservationReleased": DistributedOperationType.RELEASE,
         "BackorderedItemReceived": DistributedOperationType.RECEIVE,
+        "ReservationConsumed": DistributedOperationType.CONSUME,
     }
     _RESULTS = {
         "ReservationReleased": DistributedOperationResult.RESERVATION_RELEASED,
         "BackorderedItemReceived": DistributedOperationResult.BACKORDERED_ITEM_RECEIVED,
+        "ReservationConsumed": DistributedOperationResult.RESERVATION_CONSUMED,
     }
     _TIMESTAMP_FIELDS = {
         "ReservationReleased": "released_at",
         "BackorderedItemReceived": "received_at",
+        "ReservationConsumed": "consumed_at",
     }
 
     async def handle(
@@ -67,7 +74,7 @@ class DistributedStockOperationResultHandler:
         )
 
         order_repo = OrdemServicoRepo(session)
-        order = await order_repo.obter_por_id(ID(operation.ordem_servico_id))
+        order = await order_repo.obter_por_id_com_lock(ID(operation.ordem_servico_id))
         item = await order_repo.obter_item_por_id(ID(operation.ordem_servico_item_id))
         if order is None or item is None or item.ordem_servico_id != order.id.value:
             raise DistributedOperationInvalidError(
@@ -80,7 +87,7 @@ class DistributedStockOperationResultHandler:
                 )
             updated_item = replace(item, status=StatusItemNaOS.CANCELADO)
             updated_order = order.registrar_alteracao()
-        else:
+        elif message_type == "BackorderedItemReceived":
             if item.status is not StatusItemNaOS.A_RECEBER:
                 raise DistributedOperationInvalidError(
                     "Somente item A_RECEBER pode consolidar recebimento."
@@ -96,9 +103,35 @@ class DistributedStockOperationResultHandler:
             updated_order = order.registrar_recebimento_item(
                 ainda_tem_item_a_receber=still_backordered
             )
+        else:
+            if item.status is not StatusItemNaOS.EM_USO:
+                raise DistributedOperationInvalidError(
+                    "Somente item EM_USO pode consolidar consumo."
+                )
+            updated_item = item.consumir()
+            updated_order = order
         await order_repo.atualizar_item(updated_item)
-        await order_repo.atualizar(updated_order)
         await repo.update(completed)
+        if message_type == "ReservationConsumed":
+            pending = await repo.list_pending_for_order(
+                order.id.value,
+                DistributedOperationType.CONSUME,
+            )
+            items = await order_repo.listar_itens_da_os(ID(order.id.value))
+            has_unconsumed = any(
+                candidate.status
+                in {
+                    StatusItemNaOS.EM_USO,
+                    StatusItemNaOS.RESERVADO,
+                    StatusItemNaOS.A_RECEBER,
+                }
+                for candidate in items
+                if candidate.id != item.id
+            )
+            if not pending and not has_unconsumed:
+                updated_order = order.entregar()
+        if updated_order != order:
+            await order_repo.atualizar(updated_order)
         await self._after_effects(message_type, session)
 
     async def _after_effects(
@@ -136,7 +169,11 @@ class DistributedStockOperationResultHandler:
     ) -> None:
         result_reservation_id = cls._uuid(payload, "reservation_id")
         if (
-            operation.operation_type is DistributedOperationType.RELEASE
+            operation.operation_type
+            in {
+                DistributedOperationType.RELEASE,
+                DistributedOperationType.CONSUME,
+            }
             and result_reservation_id != operation.reservation_id
         ):
             raise DistributedOperationInvalidError("reservation_id divergente.")

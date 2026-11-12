@@ -13,6 +13,7 @@ from app.modules.ordens_servico.application.dtos.ordem_servico import (
     AdicionarItemNaOSRequest,
     AdicionarServicoNaOSRequest,
     CriarOrdemServicoRequest,
+    DeliveryOperationResponse,
     DistributedOperationResponse,
     EstatisticaTempoExecucaoServicoResponse,
     ListagemExecucoesServicoResponse,
@@ -726,10 +727,13 @@ async def finalizar_ordem_servico(
 
 @router.patch(
     "/{ordem_servico_id}/entregar",
-    status_code=200,
-    summary="Entregar OS",
+    status_code=202,
+    summary="Iniciar consumo distribuído e entrega da OS",
     responses={
-        200: {"description": "OS entregue ao cliente com sucesso", "model": OrdemServicoDetalheResponse},
+        202: {
+            "description": "Coordenação de entrega aceita",
+            "model": DeliveryOperationResponse,
+        },
         **_RESPONSES_AUTH,
         **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou item de estoque não encontrado", "model": ErrorResponse},
@@ -739,10 +743,14 @@ async def finalizar_ordem_servico(
 )
 async def entregar_ordem_servico(
     ordem_servico_id: UUID,
+    request: Request,
     usecase: EntregarOrdemServicoDep,
-) -> OrdemServicoDetalheResponse:
+) -> DeliveryOperationResponse:
     try:
-        return await usecase.execute(str(ordem_servico_id))
+        return await usecase.execute(
+            str(ordem_servico_id),
+            correlation_id=request.state.correlation_id,
+        )
     except OrdemServicoNaoEncontradaError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ItemEstoqueNaoEncontradoError as exc:

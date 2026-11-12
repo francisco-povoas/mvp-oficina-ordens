@@ -10,7 +10,6 @@ from app.integrations.resources import (
     RecursoCatalogoPort,
     RecursosHTTPAdapter,
     RecursosIndisponiveisAdapter,
-    RecursosOperacoesPort,
     ServicoCatalogoPort,
 )
 from app.modules.clientes.infrastructure.db.repositories.cliente_repo import ClienteRepo
@@ -96,7 +95,6 @@ def get_recursos_adapter(request: Request) -> RecursosIndisponiveisAdapter:
     )
 
 
-_RecursosOperacoesDep = Annotated[RecursosOperacoesPort, Depends(get_recursos_adapter)]
 _RecursoCatalogoDep = Annotated[RecursoCatalogoPort, Depends(get_recursos_adapter)]
 
 
@@ -250,12 +248,10 @@ def get_finalizar_ordem_servico(uow: _UoWDep) -> FinalizarOrdemServicoUseCase:
 
 def get_entregar_ordem_servico(
     uow: _UoWDep,
-    recursos: _RecursosOperacoesDep,
     financeiro: _FinanceiroDep,
 ) -> EntregarOrdemServicoUseCase:
     return EntregarOrdemServicoUseCase(
         uow=uow,
-        recursos=recursos,
         financeiro=financeiro,
     )
 
