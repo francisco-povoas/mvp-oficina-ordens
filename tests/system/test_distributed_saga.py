@@ -26,6 +26,15 @@ from app.modules.ordens_servico.application.use_cases.adicionar_item_na_ordem_se
 from app.modules.ordens_servico.application.use_cases.cancelar_reserva_item_saga import (
     CancelarReservaItemSagaUseCase,
 )
+from app.modules.ordens_servico.application.use_cases.confirmar_recebimento_item import (
+    ConfirmarRecebimentoItemDaOrdemServicoUseCase,
+)
+from app.modules.ordens_servico.application.use_cases.entregar_ordem_servico import (
+    EntregarOrdemServicoUseCase,
+)
+from app.modules.ordens_servico.application.use_cases.remover_item_da_ordem_servico import (
+    RemoverItemDaOrdemServicoUseCase,
+)
 from app.modules.ordens_servico.infrastructure.db.uow.ordem_servico_uow import (
     OrdemServicoUnitOfWork,
 )
@@ -223,7 +232,11 @@ def _send_semantic_duplicate(outbox: dict[str, object]) -> None:
         "correlation_id": str(outbox["correlation_id"]),
         "causation_id": None,
         "operation_id": str(outbox["aggregate_id"]),
-        "saga_id": str(outbox["saga_id"]),
+        "saga_id": (
+            str(outbox["saga_id"])
+            if outbox["saga_id"] is not None
+            else None
+        ),
         "payload": json.loads(str(outbox["payload"])),
     }
     client = boto3.client(
@@ -258,7 +271,27 @@ async def _wait_for_duplicate(factory, message_count: int) -> None:
     raise AssertionError("Duplicidade semântica não foi consolidada no prazo")
 
 
-async def test_saga_distribuida_persiste_resultados_compensacao_e_idempotencia() -> None:
+async def _wait_for_distributed_operations(
+    factory: async_sessionmaker[AsyncSession],
+    operation_ids: list[UUID],
+) -> None:
+    deadline = asyncio.get_running_loop().time() + 40
+    while asyncio.get_running_loop().time() < deadline:
+        rows = await _query_all(
+            factory,
+            "SELECT operation_id, state FROM distributed_operation "
+            "WHERE operation_id = ANY(:operation_ids)",
+            operation_ids=operation_ids,
+        )
+        if len(rows) == len(operation_ids) and all(
+            row["state"] == "COMPLETED" for row in rows
+        ):
+            return
+        await asyncio.sleep(0.2)
+    raise AssertionError("Operações distribuídas não concluíram no prazo")
+
+
+async def test_fluxos_distribuidos_persistem_efeitos_e_idempotencia() -> None:
     ordens_engine, ordens_factory = _factory(ORDENS_DATABASE_URL)
     recursos_engine, recursos_factory = _factory(RECURSOS_DATABASE_URL)
     try:
@@ -352,13 +385,180 @@ async def test_saga_distribuida_persiste_resultados_compensacao_e_idempotencia()
         assert outbox_after_duplicate["total"] == 5
         assert tuple(balance_after_duplicate.values()) == (3, 2)
 
+        reserved_context = await _query_one(
+            ordens_factory,
+            "SELECT ordem_servico_id, ordem_servico_item_id FROM reserva_item_saga "
+            "WHERE operation_id = :operation",
+            operation=operations["reserved"],
+        )
+        backordered_context = await _query_one(
+            ordens_factory,
+            "SELECT ordem_servico_id, ordem_servico_item_id FROM reserva_item_saga "
+            "WHERE operation_id = :operation",
+            operation=operations["backordered"],
+        )
+        async with ordens_factory() as session, session.begin():
+            await session.exec(
+                text(
+                    "UPDATE ordem_servico SET status = 'AGUARDANDO_ITENS', "
+                    "version = version + 1, atualizado_em = :now WHERE id = :order_id"
+                ),
+                params={
+                    "now": datetime.now(UTC),
+                    "order_id": backordered_context["ordem_servico_id"],
+                },
+            )
+        release, receive = await asyncio.gather(
+            RemoverItemDaOrdemServicoUseCase(
+                OrdemServicoUnitOfWork(ordens_factory())
+            ).execute(
+                str(reserved_context["ordem_servico_id"]),
+                str(reserved_context["ordem_servico_item_id"]),
+                correlation_id=uuid4(),
+            ),
+            ConfirmarRecebimentoItemDaOrdemServicoUseCase(
+                OrdemServicoUnitOfWork(ordens_factory())
+            ).execute(
+                str(backordered_context["ordem_servico_id"]),
+                str(backordered_context["ordem_servico_item_id"]),
+                correlation_id=uuid4(),
+            ),
+        )
+        assert release.state == "PENDING"
+        assert receive.state == "PENDING"
+        await _wait_for_distributed_operations(
+            ordens_factory,
+            [UUID(release.operation_id), UUID(receive.operation_id)],
+        )
+
+        released = await _query_one(
+            ordens_factory,
+            "SELECT d.terminal_result, i.status AS item_status "
+            "FROM distributed_operation d JOIN ordem_servico_item i "
+            "ON i.id = d.ordem_servico_item_id "
+            "WHERE d.operation_id = :operation",
+            operation=UUID(release.operation_id),
+        )
+        received = await _query_one(
+            ordens_factory,
+            "SELECT d.terminal_result, d.reservation_id, i.status AS item_status "
+            "FROM distributed_operation d JOIN ordem_servico_item i "
+            "ON i.id = d.ordem_servico_item_id "
+            "WHERE d.operation_id = :operation",
+            operation=UUID(receive.operation_id),
+        )
+        assert tuple(released.values()) == ("RESERVATION_RELEASED", "CANCELADO")
+        assert received["terminal_result"] == "BACKORDERED_ITEM_RECEIVED"
+        assert received["reservation_id"] == operations["backordered"]
+        assert received["item_status"] == "RESERVADO"
+
+        released_stock = await _query_one(
+            recursos_factory,
+            "SELECT i.quantidade_disponivel, i.quantidade_reservada, r.status "
+            "FROM item_estoque i JOIN reserva_estoque r "
+            "ON r.item_estoque_id = i.id WHERE r.operation_id = :reservation",
+            reservation=operations["reserved"],
+        )
+        received_stock = await _query_one(
+            recursos_factory,
+            "SELECT i.quantidade_disponivel, i.quantidade_reservada, r.status "
+            "FROM item_estoque i JOIN reserva_estoque r "
+            "ON r.item_estoque_id = i.id WHERE r.operation_id = :reservation",
+            reservation=operations["backordered"],
+        )
+        assert tuple(released_stock.values()) == (5, 0, "LIBERADA")
+        assert tuple(received_stock.values()) == (1, 2, "RESERVADA")
+
+        now = datetime.now(UTC)
+        async with ordens_factory() as session, session.begin():
+            await session.exec(
+                text(
+                    "UPDATE ordem_servico SET status = 'FINALIZADA', "
+                    "payment_id = :payment_id, payment_status = 'CONFIRMED', "
+                    "payment_amount = 50.00, payment_confirmed_at = :now, "
+                    "payment_quote_version = 1, atualizado_em = :now, "
+                    "version = version + 1 WHERE id = :order_id"
+                ),
+                params={
+                    "payment_id": uuid4(),
+                    "now": now,
+                    "order_id": backordered_context["ordem_servico_id"],
+                },
+            )
+            await session.exec(
+                text(
+                    "UPDATE ordem_servico_item SET status = 'EM_USO' "
+                    "WHERE id = :item_id"
+                ),
+                params={"item_id": backordered_context["ordem_servico_item_id"]},
+            )
+
+        delivery = await EntregarOrdemServicoUseCase(
+            OrdemServicoUnitOfWork(ordens_factory())
+        ).execute(
+            str(backordered_context["ordem_servico_id"]),
+            correlation_id=uuid4(),
+        )
+        assert delivery.state == "PENDING"
+        assert delivery.order_status == "FINALIZADA"
+        assert len(delivery.operation_ids) == 1
+        consume_operation_id = UUID(delivery.operation_ids[0])
+        await _wait_for_distributed_operations(
+            ordens_factory,
+            [consume_operation_id],
+        )
+
+        delivered = await _query_one(
+            ordens_factory,
+            "SELECT o.status AS order_status, i.status AS item_status, "
+            "d.terminal_result FROM ordem_servico o "
+            "JOIN ordem_servico_item i ON i.ordem_servico_id = o.id "
+            "JOIN distributed_operation d ON d.ordem_servico_item_id = i.id "
+            "WHERE d.operation_id = :operation",
+            operation=consume_operation_id,
+        )
+        consumed_stock = await _query_one(
+            recursos_factory,
+            "SELECT i.quantidade_disponivel, i.quantidade_reservada, r.status "
+            "FROM item_estoque i JOIN reserva_estoque r "
+            "ON r.item_estoque_id = i.id WHERE r.operation_id = :reservation",
+            reservation=operations["backordered"],
+        )
+        assert tuple(delivered.values()) == (
+            "ENTREGUE",
+            "CONSUMIDO",
+            "RESERVATION_CONSUMED",
+        )
+        assert tuple(consumed_stock.values()) == (1, 0, "CONSUMIDA")
+
+        consume_command = await _query_one(
+            ordens_factory,
+            "SELECT * FROM outbox_message WHERE aggregate_id = :operation "
+            "AND event_type = 'ConsumeReservation.v1'",
+            operation=consume_operation_id,
+        )
+        _send_semantic_duplicate(dict(consume_command))
+        await _wait_for_duplicate(recursos_factory, 10)
+        consume_outbox_count = await _query_one(
+            recursos_factory,
+            "SELECT count(*) AS total FROM outbox_message",
+        )
+        stock_after_consume_duplicate = await _query_one(
+            recursos_factory,
+            "SELECT quantidade_disponivel, quantidade_reservada FROM item_estoque "
+            "WHERE id = :resource_id",
+            resource_id=RESOURCE_IDS["backordered"],
+        )
+        assert consume_outbox_count["total"] == 8
+        assert tuple(stock_after_consume_duplicate.values()) == (1, 0)
+
         ordens_inbox = await _query_one(
             ordens_factory,
             "SELECT count(*) AS total, "
             "count(*) FILTER (WHERE status = 'PROCESSED') AS processed "
             "FROM inbox_message",
         )
-        assert tuple(ordens_inbox.values()) == (5, 5)
+        assert tuple(ordens_inbox.values()) == (8, 8)
     finally:
         await ordens_engine.dispose()
         await recursos_engine.dispose()

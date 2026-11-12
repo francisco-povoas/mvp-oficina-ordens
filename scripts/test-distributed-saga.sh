@@ -5,7 +5,7 @@ set -eu
 compose_file="compose.saga.test.yaml"
 
 cleanup() {
-  docker compose -f "$compose_file" down --volumes
+  docker compose -f "$compose_file" down --volumes --remove-orphans
 }
 
 trap cleanup EXIT INT TERM
