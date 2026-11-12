@@ -52,6 +52,19 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                     for index in inspector.get_indexes("reserva_item_saga")
                 },
                 "saga_fks": inspector.get_foreign_keys("reserva_item_saga"),
+                "operation_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints(
+                        "distributed_operation"
+                    )
+                },
+                "operation_indexes": {
+                    index["name"]
+                    for index in inspector.get_indexes("distributed_operation")
+                },
+                "operation_fks": inspector.get_foreign_keys(
+                    "distributed_operation"
+                ),
             }
 
         schema = await connection.run_sync(inspect_schema)
@@ -70,8 +83,9 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "inbox_message",
         "inbox_effect",
         "reserva_item_saga",
+        "distributed_operation",
     }
-    assert revision == "20261111_05_reserva_saga"
+    assert revision == "20261112_06_dist_op"
     assert schema["tables"] == expected_tables
     assert "ck_ordem_status_publico" in schema["order_checks"]
     assert {
@@ -128,6 +142,30 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ix_reserva_item_saga_ordem_servico_id",
         "ix_reserva_item_saga_estado",
     } <= schema["saga_indexes"]
+    assert {
+        "ck_distributed_operation_quantity",
+        "ck_distributed_operation_version",
+        "ck_distributed_operation_type",
+        "ck_distributed_operation_state",
+        "ck_distributed_operation_terminal_result",
+        "ck_distributed_operation_request_hash",
+        "ck_distributed_operation_business_key",
+        "ck_distributed_operation_lifecycle",
+        "ck_distributed_operation_result_metadata",
+        "ck_distributed_operation_command_contract",
+        "ck_distributed_operation_result_contract",
+        "ck_distributed_operation_terminal_contract",
+    } <= schema["operation_checks"]
+    assert {
+        "ix_distributed_operation_ordem_servico_id",
+        "ix_distributed_operation_ordem_servico_item_id",
+        "ix_distributed_operation_state",
+        "ix_distributed_operation_reservation_id",
+    } <= schema["operation_indexes"]
+    assert {fk["referred_table"] for fk in schema["operation_fks"]} == {
+        "ordem_servico",
+        "ordem_servico_item",
+    }
 
 
 async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(

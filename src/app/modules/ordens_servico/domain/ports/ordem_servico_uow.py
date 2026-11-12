@@ -2,6 +2,9 @@
 
 from typing import Protocol
 
+from app.modules.ordens_servico.domain.ports.distributed_operation_repo import (
+    DistributedOperationRepo,
+)
 from app.modules.ordens_servico.domain.ports.ordem_servico_repo import OrdemServicoRepo
 from app.modules.ordens_servico.domain.ports.reserva_item_saga_repo import (
     ReservaItemSagaRepo,
@@ -14,6 +17,7 @@ class OrdemServicoUnitOfWork(Protocol):
 
     ordem_servico_repo: OrdemServicoRepo
     reserva_item_saga_repo: ReservaItemSagaRepo
+    distributed_operation_repo: DistributedOperationRepo
     outbox: OutboxRepository
 
     async def __aenter__(self): ...

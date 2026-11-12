@@ -13,6 +13,7 @@ from app.modules.iam.infrastructure.db.models.perfil import PerfilModel
 from app.modules.iam.infrastructure.db.models.usuario import UsuarioModel
 from app.modules.iam.infrastructure.db.models.usuario_perfil import UsuarioPerfilModel
 from app.modules.ordens_servico.infrastructure.db.models import (
+    DistributedOperationModel,
     OrdemServicoItemModel,
     OrdemServicoModel,
     OrdemServicoServicoModel,
@@ -30,6 +31,7 @@ _MODELS = (
     OrdemServicoModel,
     OrdemServicoServicoModel,
     OrdemServicoItemModel,
+    DistributedOperationModel,
     ReservaItemSagaModel,
     OutboxMessageModel,
 )

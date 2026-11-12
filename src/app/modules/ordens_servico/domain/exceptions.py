@@ -124,3 +124,27 @@ class ResultadoReservaItemSagaInvalidoError(DomainException):
 
     pass
 
+
+class DistributedOperationInvalidError(DomainException):
+    """A coordenação distribuída viola uma invariante persistente."""
+
+    pass
+
+
+class DistributedOperationTransitionError(DomainException):
+    """Um resultado tentaria contradizer ou reabrir uma operação terminal."""
+
+    pass
+
+
+class DistributedOperationVersionConflictError(DomainException):
+    """Outra transação atualizou a coordenação primeiro."""
+
+    pass
+
+
+class DistributedOperationIdempotencyConflictError(DomainException):
+    """A mesma chave semântica foi reutilizada com payload divergente."""
+
+    pass
+
