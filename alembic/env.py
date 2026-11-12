@@ -14,6 +14,7 @@ from app.modules.iam.infrastructure.db.models.usuario import UsuarioModel
 from app.modules.iam.infrastructure.db.models.usuario_perfil import UsuarioPerfilModel
 from app.modules.ordens_servico.infrastructure.db.models import (
     DistributedOperationModel,
+    FinancialReconciliationModel,
     OrdemServicoItemModel,
     OrdemServicoModel,
     OrdemServicoServicoModel,
@@ -32,6 +33,7 @@ _MODELS = (
     OrdemServicoServicoModel,
     OrdemServicoItemModel,
     DistributedOperationModel,
+    FinancialReconciliationModel,
     ReservaItemSagaModel,
     OutboxMessageModel,
 )

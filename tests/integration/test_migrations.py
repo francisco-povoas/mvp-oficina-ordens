@@ -65,6 +65,19 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                 "operation_fks": inspector.get_foreign_keys(
                     "distributed_operation"
                 ),
+                "financial_reconciliation_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints(
+                        "financial_reconciliation"
+                    )
+                },
+                "financial_reconciliation_indexes": {
+                    index["name"]
+                    for index in inspector.get_indexes("financial_reconciliation")
+                },
+                "financial_reconciliation_fks": inspector.get_foreign_keys(
+                    "financial_reconciliation"
+                ),
             }
 
         schema = await connection.run_sync(inspect_schema)
@@ -84,8 +97,9 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "inbox_effect",
         "reserva_item_saga",
         "distributed_operation",
+        "financial_reconciliation",
     }
-    assert revision == "20261112_09_payment_quote"
+    assert revision == "20261112_10_fin_recon"
     assert schema["tables"] == expected_tables
     assert {
         "ck_ordem_status_publico",
@@ -150,6 +164,15 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ix_reserva_item_saga_ordem_servico_id",
         "ix_reserva_item_saga_estado",
     } <= schema["saga_indexes"]
+    assert schema["financial_reconciliation_checks"] == {
+        "ck_financial_reconciliation_status"
+    }
+    assert "ix_financial_reconciliation_selection" in schema[
+        "financial_reconciliation_indexes"
+    ]
+    assert {
+        fk["referred_table"] for fk in schema["financial_reconciliation_fks"]
+    } == {"ordem_servico"}
     assert {
         "ck_distributed_operation_quantity",
         "ck_distributed_operation_version",

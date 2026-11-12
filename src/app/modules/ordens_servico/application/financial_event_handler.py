@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.integrations.finance import FinancialStatus
 from app.modules.ordens_servico.domain.entities.distributed_operation import (
     DistributedOperation,
     DistributedOperationState,
@@ -59,13 +60,125 @@ class FinancialEventHandler:
             raise FinancialEventInvalidError("Somente eventos financeiros v1 sem Saga são aceitos.")
         payload = self._payload(envelope)
         order_id = self._uuid(payload, "order_id")
-        quote_id = self._uuid(payload, "quote_id")
-        quote_version = self._positive_int(payload, "quote_version")
 
         repo = OrdemServicoRepo(session)
         order = await repo.obter_por_id_com_lock(ID(order_id))
         if order is None:
             raise FinancialEventInvalidError(f"OS '{order_id}' não encontrada.")
+
+        await self._apply_fact(
+            message_type=message_type,
+            payload=payload,
+            order=order,
+            session=session,
+            correlation_id=self._uuid(envelope, "correlation_id"),
+            causation_id=self._uuid(envelope, "message_id"),
+        )
+        await self._after_effects(message_type, session)
+
+    async def apply_authoritative_snapshot(
+        self,
+        snapshot: FinancialStatus,
+        session: AsyncSession,
+        *,
+        correlation_id: UUID,
+    ):
+        """Reaplica fatos sem criar uma mensagem artificial na Inbox."""
+
+        repo = OrdemServicoRepo(session)
+        order = await repo.obter_por_id_com_lock(ID(snapshot.order_id))
+        if order is None:
+            raise FinancialEventInvalidError(f"OS '{snapshot.order_id}' não encontrada.")
+        quote = snapshot.quote
+        if quote is not None and quote.status != "RASCUNHO":
+            if quote.status == "COMUNICADO":
+                if quote.communicated_at is None:
+                    raise FinancialEventInvalidError(
+                        "Orçamento comunicado sem instante autoritativo."
+                    )
+                payload: Mapping[str, object] = {
+                    "order_id": str(snapshot.order_id),
+                    "quote_id": str(quote.quote_id),
+                    "quote_version": quote.quote_version,
+                    "total": format(quote.total, ".2f"),
+                    "communicated_at": quote.communicated_at.isoformat(),
+                }
+                message_type = "QuoteCommunicated"
+            elif quote.status in {"APROVADO", "RECUSADO"}:
+                if quote.decided_at is None:
+                    raise FinancialEventInvalidError(
+                        "Decisão de orçamento sem instante autoritativo."
+                    )
+                message_type = (
+                    "QuoteApproved" if quote.status == "APROVADO" else "QuoteRejected"
+                )
+                payload = {
+                    "order_id": str(snapshot.order_id),
+                    "quote_id": str(quote.quote_id),
+                    "quote_version": quote.quote_version,
+                    (
+                        "approved_at"
+                        if quote.status == "APROVADO"
+                        else "rejected_at"
+                    ): quote.decided_at.isoformat(),
+                }
+                if quote.status == "RECUSADO":
+                    payload = {**payload, "reason": quote.rejection_reason}
+            else:
+                raise FinancialEventInvalidError(
+                    f"Status autoritativo de orçamento inválido: '{quote.status}'."
+                )
+            order = await self._apply_fact(
+                message_type=message_type,
+                payload=payload,
+                order=order,
+                session=session,
+                correlation_id=correlation_id,
+                causation_id=None,
+            )
+
+        payment = snapshot.payment
+        if payment is not None and payment.status == "CONFIRMED":
+            if payment.quote_id is None or payment.quote_version is None:
+                raise FinancialEventInvalidError(
+                    "Pagamento confirmado sem identidade do orçamento."
+                )
+            if payment.confirmed_at is None:
+                raise FinancialEventInvalidError(
+                    "Pagamento confirmado sem instante autoritativo."
+                )
+            order = await self._apply_fact(
+                message_type="PaymentConfirmed",
+                payload={
+                    "order_id": str(snapshot.order_id),
+                    "quote_id": str(payment.quote_id),
+                    "quote_version": payment.quote_version,
+                    "payment_id": str(payment.payment_id),
+                    "status": "CONFIRMED",
+                    "amount": format(payment.amount, ".2f"),
+                    "confirmed_at": payment.confirmed_at.isoformat(),
+                },
+                order=order,
+                session=session,
+                correlation_id=correlation_id,
+                causation_id=None,
+            )
+        return order
+
+    async def _apply_fact(
+        self,
+        *,
+        message_type: str,
+        payload: Mapping[str, object],
+        order,
+        session: AsyncSession,
+        correlation_id: UUID,
+        causation_id: UUID | None,
+    ):
+        repo = OrdemServicoRepo(session)
+        order_id = order.id.value
+        quote_id = self._uuid(payload, "quote_id")
+        quote_version = self._positive_int(payload, "quote_version")
 
         if message_type == "QuoteCommunicated":
             updated = order.registrar_orcamento_comunicado(
@@ -86,12 +199,13 @@ class FinancialEventHandler:
             )
         elif message_type == "QuoteRejected":
             updated, cleanup_complete = await self._reject_quote(
-                envelope=envelope,
                 payload=payload,
                 order=order,
                 quote_id=quote_id,
                 quote_version=quote_version,
                 session=session,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         else:
             if payload.get("status") != "CONFIRMED":
@@ -108,18 +222,20 @@ class FinancialEventHandler:
         if updated != order:
             await repo.atualizar(updated)
             if message_type == "QuoteRejected" and cleanup_complete:
-                await repo.atualizar(updated.encerrar_por_recusa_financeira())
-        await self._after_effects(message_type, session)
+                updated = updated.encerrar_por_recusa_financeira()
+                await repo.atualizar(updated)
+        return updated
 
     async def _reject_quote(
         self,
         *,
-        envelope: Mapping[str, object],
         payload: Mapping[str, object],
         order,
         quote_id: UUID,
         quote_version: int,
         session: AsyncSession,
+        correlation_id: UUID,
+        causation_id: UUID | None,
     ):
         reason_value = payload.get("reason")
         reason = None if reason_value is None else str(reason_value)
@@ -143,8 +259,6 @@ class FinancialEventHandler:
                 await saga_repo.atualizar(updated_saga)
             pending_cleanup = True
 
-        correlation_id = self._uuid(envelope, "correlation_id")
-        causation_id = self._uuid(envelope, "message_id")
         for item in await order_repo.listar_itens_da_os(ID(order.id.value)):
             if item.status is StatusItemNaOS.CANCELADO:
                 continue
