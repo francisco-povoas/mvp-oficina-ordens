@@ -85,9 +85,17 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "reserva_item_saga",
         "distributed_operation",
     }
-    assert revision == "20261112_06_dist_op"
+    assert revision == "20261112_09_payment_quote"
     assert schema["tables"] == expected_tables
-    assert "ck_ordem_status_publico" in schema["order_checks"]
+    assert {
+        "ck_ordem_status_publico",
+        "ck_ordem_quote_status",
+        "ck_ordem_quote_version",
+        "ck_ordem_quote_total",
+        "ck_ordem_quote_identity",
+        "ck_ordem_quote_rejection_reason",
+        "ck_ordem_payment_projection",
+    } <= schema["order_checks"]
     assert {
         "ck_os_item_quantidade_positiva",
         "ck_os_item_valor_nao_negativo",

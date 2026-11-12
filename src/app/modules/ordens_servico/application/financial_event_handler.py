@@ -276,7 +276,7 @@ class FinancialEventHandler:
                     "reservation_id": str(reservation_id),
                     "resource_id": str(item.item_estoque_id),
                     "quantity": item.quantidade,
-                    "reason": "QUOTE_REJECTED",
+                    "reason": "QUOTE_REJECTION",
                 },
                 correlation_id=correlation_id,
                 causation_id=causation_id,

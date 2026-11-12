@@ -246,7 +246,7 @@ async def test_reserva_so_encerra_apos_confirmacao_de_recursos(
     assert order is not None and order.status == "AGUARDANDO_APROVACAO"
     assert operation.state == "PENDING"
     assert command.causation_id == UUID(str(rejected["message_id"]))
-    assert json.loads(command.payload)["reason"] == "QUOTE_REJECTED"
+    assert json.loads(command.payload)["reason"] == "QUOTE_REJECTION"
 
     result = {
         "message_id": str(uuid4()),

@@ -1,3 +1,20 @@
+x-ordens-environment: &ordens-environment
+  ENVIRONMENT: test
+  LOG_LEVEL: WARNING
+  DATABASE_URL: postgresql+asyncpg://ordens:ordens@ordens-db:5432/ordens_saga_test
+  JWT_SECRET_KEY: saga-local-only
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: local-only-elasticmq
+  AWS_SECRET_ACCESS_KEY: local-only-elasticmq
+  SQS_ENDPOINT_URL: http://elasticmq:9324
+  SQS_ORDENS_TO_RECURSOS_URL: http://elasticmq:9324/000000000000/mvp-oficina-ordens-to-recursos-local.fifo
+  SQS_RECURSOS_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-recursos-to-ordens-local.fifo
+  SQS_FINANCEIRO_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-financeiro-to-ordens-local.fifo
+  PUBLISHER_POLL_INTERVAL_SECONDS: "0.1"
+  CONSUMER_WAIT_TIME_SECONDS: "1"
+  CONSUMER_VISIBILITY_TIMEOUT_SECONDS: "10"
+  CONSUMER_HEARTBEAT_SECONDS: "1"
+
 services:
   ordens-db:
     image: postgres:16-alpine
@@ -37,6 +54,11 @@ services:
       timeout: 2s
       retries: 20
 
+  dynamodb:
+    image: amazon/dynamodb-local:2.6.1
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    working_dir: /home/dynamodblocal
+
   ordens-migrate:
     build:
       context: .
@@ -59,6 +81,76 @@ services:
       recursos-db:
         condition: service_healthy
 
+  financeiro-bootstrap:
+    build:
+      context: ../mvp-oficina-financeiro
+      target: test
+    command:
+      - python
+      - -c
+      - from app.config import get_settings; from app.infrastructure.dynamodb import ensure_table; ensure_table(get_settings())
+    environment: &financeiro-environment
+      ENVIRONMENT: test
+      LOG_LEVEL: WARNING
+      AWS_REGION: us-east-1
+      # DynamoDB Local 2.x valida o formato do access key id e rejeita hifens.
+      AWS_ACCESS_KEY_ID: localdynamodb
+      AWS_SECRET_ACCESS_KEY: localdynamodb
+      DYNAMODB_ENDPOINT_URL: http://dynamodb:8000
+      DYNAMODB_TABLE: mvp-oficina-financeiro-saga-test
+      JWT_SECRET_KEY: saga-local-only
+      INTERNAL_AUTH_URL: http://ordens-api:8000/internal/v1/auth/token
+      ORDERS_BASE_URL: http://ordens-api:8000
+      SERVICE_CLIENT_ID: mvp-oficina-financeiro
+      SERVICE_CLIENT_SECRET: financeiro-local-secret
+      SQS_ENDPOINT_URL: http://elasticmq:9324
+      SQS_FINANCEIRO_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-financeiro-to-ordens-local.fifo
+      PUBLISHER_POLL_INTERVAL_SECONDS: "0.1"
+    depends_on:
+      dynamodb:
+        condition: service_started
+
+  ordens-api:
+    build:
+      context: .
+      target: test
+    command: uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+    environment:
+      <<: *ordens-environment
+      SERVICE_CLIENTS_JSON: '{"mvp-oficina-financeiro":{"secret_hash":"$$2b$$04$$GQcP0R7hj0drm8Tv10ze8ujRWGslA7x6Y.IwvUeiHZewHQ9jlxRvO","grants":{"mvp-oficina-ordens":["orders:quote-context:read","orders:payment-context:read"]}}}'
+    depends_on:
+      ordens-migrate:
+        condition: service_completed_successfully
+
+  financeiro-api:
+    build:
+      context: ../mvp-oficina-financeiro
+      target: test
+    command: uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+    environment: *financeiro-environment
+    depends_on:
+      financeiro-bootstrap:
+        condition: service_completed_successfully
+      ordens-api:
+        condition: service_started
+
+  financeiro-publisher:
+    build:
+      context: ../mvp-oficina-financeiro
+      target: test
+    command:
+      - sh
+      - -c
+      - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.publisher
+    environment: *financeiro-environment
+    volumes:
+      - saga-state:/state
+    depends_on:
+      financeiro-bootstrap:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
+
   ordens-publisher:
     build:
       context: .
@@ -67,22 +159,7 @@ services:
       - sh
       - -c
       - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.publisher
-    environment: &ordens-environment
-      ENVIRONMENT: test
-      LOG_LEVEL: WARNING
-      DATABASE_URL: postgresql+asyncpg://ordens:ordens@ordens-db:5432/ordens_saga_test
-      JWT_SECRET_KEY: saga-local-only
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: local-only-elasticmq
-      AWS_SECRET_ACCESS_KEY: local-only-elasticmq
-      SQS_ENDPOINT_URL: http://elasticmq:9324
-      SQS_ORDENS_TO_RECURSOS_URL: http://elasticmq:9324/000000000000/mvp-oficina-ordens-to-recursos-local.fifo
-      SQS_RECURSOS_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-recursos-to-ordens-local.fifo
-      SQS_FINANCEIRO_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-financeiro-to-ordens-local.fifo
-      PUBLISHER_POLL_INTERVAL_SECONDS: "0.1"
-      CONSUMER_WAIT_TIME_SECONDS: "1"
-      CONSUMER_VISIBILITY_TIMEOUT_SECONDS: "10"
-      CONSUMER_HEARTBEAT_SECONDS: "1"
+    environment: *ordens-environment
     volumes:
       - saga-state:/state
     depends_on:
@@ -165,6 +242,11 @@ services:
       <<: *ordens-environment
       RECURSOS_DATABASE_URL: postgresql+asyncpg://recursos:recursos@recursos-db:5432/recursos_saga_test
       SAGA_READY_FILE: /state/ready
+      FINANCEIRO_BASE_URL: http://financeiro-api:8000
+      AWS_ACCESS_KEY_ID: localdynamodb
+      AWS_SECRET_ACCESS_KEY: localdynamodb
+      DYNAMODB_ENDPOINT_URL: http://dynamodb:8000
+      DYNAMODB_TABLE: mvp-oficina-financeiro-saga-test
     volumes:
       - saga-state:/state
     depends_on:
@@ -175,6 +257,10 @@ services:
       recursos-consumer:
         condition: service_started
       recursos-publisher:
+        condition: service_started
+      financeiro-api:
+        condition: service_started
+      financeiro-publisher:
         condition: service_started
 
 volumes:
