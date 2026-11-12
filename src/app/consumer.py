@@ -11,6 +11,9 @@ from app.infrastructure.messaging.contracts import JsonSchemaMessageValidator
 from app.infrastructure.messaging.inbox import PostgresInboxProcessor, TransactionalMessageHandler
 from app.infrastructure.messaging.sqs import create_sqs_client
 from app.infrastructure.messaging.sqs_consumer import SqsConsumerTransport
+from app.modules.ordens_servico.application.financial_event_handler import (
+    FinancialEventHandler,
+)
 from app.modules.ordens_servico.application.resource_result_handler import (
     ResourceResultHandler,
 )
@@ -42,7 +45,10 @@ class ConsumerHandlers:
 def default_consumer_handlers() -> ConsumerHandlers:
     """Ativa somente os resultados implementados; os demais falham sem ACK."""
 
-    return ConsumerHandlers(resource_results=ResourceResultHandler())
+    return ConsumerHandlers(
+        resource_results=ResourceResultHandler(),
+        financial_events=FinancialEventHandler(),
+    )
 
 
 async def run_consumers(

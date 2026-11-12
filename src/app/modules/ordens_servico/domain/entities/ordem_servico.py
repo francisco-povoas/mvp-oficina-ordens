@@ -34,6 +34,14 @@ class StatusOrdemServico(str, Enum):
     ENCERRADA = "ENCERRADA"
 
 
+class StatusOrcamentoFinanceiro(str, Enum):
+    """Fatos mínimos do orçamento mantidos como projeção em Ordens."""
+
+    COMUNICADO = "COMUNICADO"
+    APROVADO = "APROVADO"
+    RECUSADO = "RECUSADO"
+
+
 # Transições válidas entre status
 _TRANSICOES_VALIDAS: dict[StatusOrdemServico, set[StatusOrdemServico]] = {
     StatusOrdemServico.RECEBIDA: {
@@ -82,6 +90,14 @@ class OrdemServico:
     iniciado_diagnostico_em: datetime | None
     diagnostico_concluido_em: datetime | None
     version: int = 1
+
+    # Projeção mínima dos fatos de orçamento; Financeiro segue como autoridade.
+    quote_id: UUID | None = None
+    quote_status: StatusOrcamentoFinanceiro | None = None
+    quote_version: int | None = None
+    quote_total: Decimal | None = None
+    quote_communicated_at: datetime | None = None
+    quote_decided_at: datetime | None = None
 
     # Projeção mínima derivada de Financeiro; não é o agregado de pagamento.
     payment_id: UUID | None = None
@@ -179,6 +195,145 @@ class OrdemServico:
             atualizado_em=datetime.now(UTC),
             version=self.version + 1,
         )
+
+    def registrar_orcamento_comunicado(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        total: Decimal,
+        communicated_at: datetime,
+    ) -> "OrdemServico":
+        """Aplica o fato comunicado sem regredir uma decisão financeira posterior."""
+
+        self._validar_fato_orcamento(
+            quote_id=quote_id,
+            quote_version=quote_version,
+            occurred_at=communicated_at,
+        )
+        if total < Decimal("0"):
+            raise OrdemServicoInvalidaError("O total comunicado não pode ser negativo.")
+        if self.quote_version is not None:
+            if quote_version < self.quote_version:
+                return self
+            if quote_version == self.quote_version:
+                if self.quote_status is StatusOrcamentoFinanceiro.COMUNICADO:
+                    if self.quote_total != total:
+                        raise OrdemServicoInvalidaError(
+                            "A mesma versão do orçamento possui total divergente."
+                        )
+                    return self
+                raise OrdemServicoInvalidaError(
+                    "A comunicação contradiz uma decisão financeira da mesma versão."
+                )
+            if self.quote_status in {
+                StatusOrcamentoFinanceiro.APROVADO,
+                StatusOrcamentoFinanceiro.RECUSADO,
+            }:
+                raise OrdemServicoInvalidaError(
+                    "Uma comunicação posterior não pode substituir decisão financeira."
+                )
+
+        if self.status is StatusOrdemServico.DIAGNOSTICO_CONCLUIDO:
+            status = StatusOrdemServico.AGUARDANDO_APROVACAO
+        elif self.status in {
+            StatusOrdemServico.AGUARDANDO_APROVACAO,
+            StatusOrdemServico.AGUARDANDO_ITENS,
+            StatusOrdemServico.APROVADA,
+            StatusOrdemServico.EM_EXECUCAO,
+            StatusOrdemServico.FINALIZADA,
+            StatusOrdemServico.ENTREGUE,
+        }:
+            status = self.status
+        else:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita orçamento comunicado."
+            )
+        return replace(
+            self,
+            status=status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.COMUNICADO,
+            quote_version=quote_version,
+            quote_total=total,
+            quote_communicated_at=communicated_at,
+            quote_decided_at=None,
+        )
+
+    def registrar_orcamento_aprovado(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        approved_at: datetime,
+        possui_item_a_receber: bool,
+    ) -> "OrdemServico":
+        """Registra a aprovação autoritativa respeitando versão e avanço da OS."""
+
+        self._validar_fato_orcamento(
+            quote_id=quote_id,
+            quote_version=quote_version,
+            occurred_at=approved_at,
+        )
+        if self.quote_version is not None:
+            if quote_version < self.quote_version:
+                return self
+            if quote_version == self.quote_version:
+                if self.quote_status is StatusOrcamentoFinanceiro.APROVADO:
+                    return self
+                raise OrdemServicoInvalidaError(
+                    "A decisão financeira contradiz a versão já projetada."
+                )
+
+        if self.status in {
+            StatusOrdemServico.DIAGNOSTICO_CONCLUIDO,
+            StatusOrdemServico.AGUARDANDO_APROVACAO,
+        }:
+            status = (
+                StatusOrdemServico.AGUARDANDO_ITENS
+                if possui_item_a_receber
+                else StatusOrdemServico.APROVADA
+            )
+        elif self.status in {
+            StatusOrdemServico.AGUARDANDO_ITENS,
+            StatusOrdemServico.APROVADA,
+            StatusOrdemServico.EM_EXECUCAO,
+            StatusOrdemServico.FINALIZADA,
+            StatusOrdemServico.ENTREGUE,
+        }:
+            status = self.status
+        else:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita orçamento aprovado."
+            )
+        return replace(
+            self,
+            status=status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.APROVADO,
+            quote_version=quote_version,
+            quote_decided_at=approved_at,
+        )
+
+    def _validar_fato_orcamento(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        occurred_at: datetime,
+    ) -> None:
+        if quote_version < 1:
+            raise OrdemServicoInvalidaError("A versão do orçamento deve ser positiva.")
+        if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+            raise OrdemServicoInvalidaError("O fato financeiro deve possuir timezone.")
+        if self.quote_id is not None and self.quote_id != quote_id:
+            raise OrdemServicoInvalidaError(
+                "O fato financeiro pertence a outro orçamento da OS."
+            )
 
     def iniciar_execucao(
         self,

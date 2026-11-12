@@ -154,3 +154,9 @@ class DistributedOperationNotFoundError(DomainException):
 
     pass
 
+
+class FinancialEventInvalidError(DomainException):
+    """Um fato financeiro não corresponde à OS ou à projeção persistida."""
+
+    pass
+

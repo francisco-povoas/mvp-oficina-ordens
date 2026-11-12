@@ -9,6 +9,7 @@ from sqlmodel import select
 
 from app.modules.ordens_servico.domain.entities.ordem_servico import (
     OrdemServico,
+    StatusOrcamentoFinanceiro,
     StatusOrdemServico,
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
@@ -56,6 +57,12 @@ class OrdemServicoRepo:
             iniciado_diagnostico_em=os.iniciado_diagnostico_em,
             diagnostico_concluido_em=os.diagnostico_concluido_em,
             version=os.version,
+            quote_id=os.quote_id,
+            quote_status=os.quote_status.value if os.quote_status else None,
+            quote_version=os.quote_version,
+            quote_total=os.quote_total,
+            quote_communicated_at=os.quote_communicated_at,
+            quote_decided_at=os.quote_decided_at,
             payment_id=os.payment_id,
             payment_status=os.payment_status,
             payment_amount=os.payment_amount,
@@ -100,6 +107,12 @@ class OrdemServicoRepo:
                 iniciado_diagnostico_em=os.iniciado_diagnostico_em,
                 diagnostico_concluido_em=os.diagnostico_concluido_em,
                 version=os.version,
+                quote_id=os.quote_id,
+                quote_status=os.quote_status.value if os.quote_status else None,
+                quote_version=os.quote_version,
+                quote_total=os.quote_total,
+                quote_communicated_at=os.quote_communicated_at,
+                quote_decided_at=os.quote_decided_at,
                 payment_id=os.payment_id,
                 payment_status=os.payment_status,
                 payment_amount=os.payment_amount,
@@ -301,6 +314,20 @@ class OrdemServicoRepo:
             iniciado_diagnostico_em=model.iniciado_diagnostico_em,
             diagnostico_concluido_em=model.diagnostico_concluido_em,
             version=model.version,
+            quote_id=model.quote_id,
+            quote_status=(
+                StatusOrcamentoFinanceiro(model.quote_status)
+                if model.quote_status
+                else None
+            ),
+            quote_version=model.quote_version,
+            quote_total=(
+                Decimal(str(model.quote_total))
+                if model.quote_total is not None
+                else None
+            ),
+            quote_communicated_at=model.quote_communicated_at,
+            quote_decided_at=model.quote_decided_at,
             payment_id=model.payment_id,
             payment_status=model.payment_status,
             payment_amount=(
