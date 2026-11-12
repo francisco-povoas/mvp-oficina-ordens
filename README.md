@@ -126,8 +126,23 @@ Por segurança, a composição padrão ativa somente o handler da Saga implement
 Tipos ainda sem handler falham sem ACK e permanecem disponíveis para retry/DLQ.
 SIGTERM e SIGINT encerram novos polls e aguardam o trabalho em andamento.
 
+## Reconciliação financeira
+
+A reconciliação é um processo one-shot independente do FastAPI. Ela seleciona apenas
+OS elegíveis e vencidas, usa paginação por cursor, lote e concorrência limitados,
+consulta `financial-status` com JWT de serviço e registra o resultado persistente por
+OS. Timeout ou indisponibilidade não criam decisão financeira; a próxima execução
+externa tenta novamente depois do intervalo configurado.
+
+```bash
+python -m app.financial_reconciliation_worker
+```
+
+As variáveis `RECONCILIATION_*` em `.env.example` controlam lote, número máximo de
+páginas, concorrência, timeout, idade mínima e intervalo de nova verificação. O
+processo aceita SIGTERM/SIGINT, conclui o trabalho já iniciado e não contém scheduler
+próprio nem requer CronJob Kubernetes.
+
 ## Próxima etapa funcional
 
-As coordenações distribuídas de recebimento, consumo e os eventos financeiros serão
-conectadas incrementalmente sem alterar os limites de responsabilidade entre os
-serviços.
+A Etapa 2 permanece em aceite; a Etapa 3 não é iniciada automaticamente.

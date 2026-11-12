@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     financial_consumer_schema_path: str = (
         "contracts/vendor/financeiro/financial-events.v1.schema.json"
     )
+    reconciliation_batch_size: int = 50
+    reconciliation_concurrency: int = 4
+    reconciliation_timeout_seconds: float = 3.0
+    reconciliation_stale_after_seconds: float = 300.0
+    reconciliation_recheck_seconds: float = 300.0
+    reconciliation_max_batches: int = 10
 
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
@@ -103,6 +109,23 @@ class Settings(BaseSettings):
             raise ValueError("consumer wait time must be between 0 and 20")
         if not 0 < self.consumer_heartbeat_seconds < self.consumer_visibility_timeout_seconds:
             raise ValueError("consumer heartbeat must be positive and below visibility timeout")
+
+    def validate_reconciliation_runtime(self) -> None:
+        self.validate_runtime()
+        positive = {
+            "RECONCILIATION_BATCH_SIZE": self.reconciliation_batch_size,
+            "RECONCILIATION_CONCURRENCY": self.reconciliation_concurrency,
+            "RECONCILIATION_TIMEOUT_SECONDS": self.reconciliation_timeout_seconds,
+            "RECONCILIATION_RECHECK_SECONDS": self.reconciliation_recheck_seconds,
+            "RECONCILIATION_MAX_BATCHES": self.reconciliation_max_batches,
+        }
+        invalid = [name for name, value in positive.items() if value <= 0]
+        if invalid:
+            raise ValueError(
+                f"reconciliation settings must be positive: {', '.join(invalid)}"
+            )
+        if self.reconciliation_stale_after_seconds < 0:
+            raise ValueError("RECONCILIATION_STALE_AFTER_SECONDS cannot be negative")
 
 
 @lru_cache

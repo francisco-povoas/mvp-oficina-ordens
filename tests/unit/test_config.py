@@ -51,3 +51,20 @@ def test_production_publisher_rejects_custom_sqs_endpoint() -> None:
     )
     with pytest.raises(ValueError, match="SQS_ENDPOINT_URL"):
         settings.validate_publisher_runtime()
+
+
+def test_reconciliation_requires_positive_limits_and_allows_zero_staleness() -> None:
+    valid = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://db/ordens",
+        reconciliation_stale_after_seconds=0,
+    )
+    valid.validate_reconciliation_runtime()
+
+    invalid = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://db/ordens",
+        reconciliation_batch_size=0,
+    )
+    with pytest.raises(ValueError, match="RECONCILIATION_BATCH_SIZE"):
+        invalid.validate_reconciliation_runtime()

@@ -9,11 +9,16 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.application.financial_reconciliation_runner import (
+    FinancialReconciliationPolicy,
+    FinancialReconciliationRunner,
+)
 from app.integrations.finance import (
     FinancialStatus,
     PaymentFinancialStatus,
     QuoteFinancialStatus,
 )
+from app.integrations.http import DependencyUnavailableError
 from app.modules.ordens_servico.application.financial_event_handler import (
     FinancialEventHandler,
 )
@@ -234,3 +239,109 @@ async def test_falha_depois_da_aplicacao_reverte_projecao_e_marcador(
     assert order.quote_id is None
     assert order.version == 1
     assert marker is None
+
+
+class FakeFinance:
+    def __init__(self, result) -> None:
+        self.result = result
+
+    async def obter_status(self, order_id):
+        if isinstance(self.result, Exception):
+            raise self.result
+        if callable(self.result):
+            return self.result(order_id)
+        return self.result
+
+
+def _policy(*, batch=2, batches=10, recheck_seconds=3600):
+    from datetime import timedelta
+
+    return FinancialReconciliationPolicy(
+        batch_size=batch,
+        concurrency=2,
+        timeout_seconds=1,
+        stale_after=timedelta(0),
+        recheck_after=timedelta(seconds=recheck_seconds),
+        max_batches=batches,
+    )
+
+
+async def test_runner_pagina_limita_lote_e_reinicio_respeita_marcador(
+    db_engine: AsyncEngine,
+) -> None:
+    order_ids = [await _seed_order(db_engine) for _ in range(5)]
+    runner = FinancialReconciliationRunner(
+        session_factory=_factory(db_engine),
+        finance_factory=lambda _: FakeFinance(None),
+        policy=_policy(batch=2, batches=2),
+    )
+
+    first = await runner.run_once()
+    restarted = await FinancialReconciliationRunner(
+        session_factory=_factory(db_engine),
+        finance_factory=lambda _: FakeFinance(None),
+        policy=_policy(batch=10, batches=1),
+    ).run_once()
+
+    assert first.selected == 4
+    assert first.synchronized == 4
+    assert restarted.selected == 1
+    async with _factory(db_engine)() as session:
+        markers = (
+            await session.exec(select(FinancialReconciliationModel))
+        ).all()
+    assert {marker[0].order_id for marker in markers} == set(order_ids)
+
+
+async def test_runner_isola_indisponibilidade_e_converge_em_nova_execucao(
+    db_engine: AsyncEngine,
+) -> None:
+    unavailable_id = await _seed_order(db_engine)
+    healthy_id = await _seed_order(db_engine)
+    results = {
+        unavailable_id: DependencyUnavailableError("offline"),
+        healthy_id: None,
+    }
+
+    first = await FinancialReconciliationRunner(
+        session_factory=_factory(db_engine),
+        finance_factory=lambda _: FakeFinance(
+            lambda order_id: (
+                (_ for _ in ()).throw(results[order_id])
+                if isinstance(results[order_id], Exception)
+                else results[order_id]
+            )
+        ),
+        policy=_policy(recheck_seconds=0),
+    ).run_once()
+    results[unavailable_id] = _snapshot(unavailable_id)
+    second = await FinancialReconciliationRunner(
+        session_factory=_factory(db_engine),
+        finance_factory=lambda _: FakeFinance(lambda order_id: results[order_id]),
+        policy=_policy(recheck_seconds=0),
+    ).run_once()
+
+    assert first.selected == 2
+    assert first.unavailable == 1
+    assert first.synchronized == 1
+    assert second.selected == 2
+    async with _factory(db_engine)() as session:
+        recovered = await session.get(OrdemServicoModel, unavailable_id)
+        marker = await session.get(FinancialReconciliationModel, unavailable_id)
+    assert recovered.quote_status == "APROVADO"
+    assert marker.status == "SYNCHRONIZED"
+    assert marker.check_count == 2
+
+
+async def test_runner_shutdown_antes_da_selecao_nao_inicia_trabalho(
+    db_engine: AsyncEngine,
+) -> None:
+    await _seed_order(db_engine)
+    stop = asyncio.Event()
+    stop.set()
+    summary = await FinancialReconciliationRunner(
+        session_factory=_factory(db_engine),
+        finance_factory=lambda _: FakeFinance(None),
+        policy=_policy(),
+    ).run_once(stop)
+    assert summary.selected == 0

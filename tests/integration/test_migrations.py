@@ -16,6 +16,9 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                     constraint["name"]
                     for constraint in inspector.get_check_constraints("ordem_servico")
                 },
+                "order_indexes": {
+                    index["name"] for index in inspector.get_indexes("ordem_servico")
+                },
                 "item_checks": {
                     constraint["name"]
                     for constraint in inspector.get_check_constraints("ordem_servico_item")
@@ -99,7 +102,7 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "distributed_operation",
         "financial_reconciliation",
     }
-    assert revision == "20261112_10_fin_recon"
+    assert revision == "20261112_11_fin_recon_select"
     assert schema["tables"] == expected_tables
     assert {
         "ck_ordem_status_publico",
@@ -110,6 +113,7 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ck_ordem_quote_rejection_reason",
         "ck_ordem_payment_projection",
     } <= schema["order_checks"]
+    assert "ix_ordem_financial_reconciliation_selection" in schema["order_indexes"]
     assert {
         "ck_os_item_quantidade_positiva",
         "ck_os_item_valor_nao_negativo",
