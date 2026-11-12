@@ -29,6 +29,17 @@ class ConcluirDiagnosticoOrdemServicoUseCase:
                     f"OS com ID {ordem_servico_id} não encontrada."
                 )
 
+            sagas_pendentes = (
+                await self.uow.reserva_item_saga_repo.listar_nao_terminais_da_os(
+                    _id.value
+                )
+            )
+            if sagas_pendentes:
+                raise OrdemServicoInvalidaError(
+                    "Não é possível concluir o diagnóstico enquanto houver "
+                    "reserva de item pendente."
+                )
+
             os_atualizada = os.concluir_diagnostico()
 
             # Validar que há pelo menos um serviço ativo (não cancelado)

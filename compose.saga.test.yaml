@@ -1,0 +1,181 @@
+services:
+  ordens-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ordens_saga_test
+      POSTGRES_USER: ordens
+      POSTGRES_PASSWORD: ordens
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ordens -d ordens_saga_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  recursos-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: recursos_saga_test
+      POSTGRES_USER: recursos
+      POSTGRES_PASSWORD: recursos
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recursos -d recursos_saga_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.7.1
+    volumes:
+      - ./tests/integration/elasticmq.conf:/opt/elasticmq.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9324/?Action=ListQueues"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  ordens-migrate:
+    build:
+      context: .
+      target: test
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ordens:ordens@ordens-db:5432/ordens_saga_test
+    depends_on:
+      ordens-db:
+        condition: service_healthy
+
+  recursos-migrate:
+    build:
+      context: ../mvp-oficina-recursos
+      target: test
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recursos:recursos@recursos-db:5432/recursos_saga_test
+    depends_on:
+      recursos-db:
+        condition: service_healthy
+
+  ordens-publisher:
+    build:
+      context: .
+      target: test
+    command:
+      - sh
+      - -c
+      - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.publisher
+    environment: &ordens-environment
+      ENVIRONMENT: test
+      LOG_LEVEL: WARNING
+      DATABASE_URL: postgresql+asyncpg://ordens:ordens@ordens-db:5432/ordens_saga_test
+      JWT_SECRET_KEY: saga-local-only
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local-only-elasticmq
+      AWS_SECRET_ACCESS_KEY: local-only-elasticmq
+      SQS_ENDPOINT_URL: http://elasticmq:9324
+      SQS_ORDENS_TO_RECURSOS_URL: http://elasticmq:9324/000000000000/mvp-oficina-ordens-to-recursos-local.fifo
+      SQS_RECURSOS_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-recursos-to-ordens-local.fifo
+      SQS_FINANCEIRO_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-financeiro-to-ordens-local.fifo
+      PUBLISHER_POLL_INTERVAL_SECONDS: "0.1"
+      CONSUMER_WAIT_TIME_SECONDS: "1"
+      CONSUMER_VISIBILITY_TIMEOUT_SECONDS: "10"
+      CONSUMER_HEARTBEAT_SECONDS: "1"
+    volumes:
+      - saga-state:/state
+    depends_on:
+      ordens-migrate:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
+
+  ordens-consumer:
+    build:
+      context: .
+      target: test
+    command:
+      - sh
+      - -c
+      - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.consumer
+    environment: *ordens-environment
+    volumes:
+      - saga-state:/state
+    depends_on:
+      ordens-migrate:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
+
+  recursos-consumer:
+    build:
+      context: ../mvp-oficina-recursos
+      target: test
+    command:
+      - sh
+      - -c
+      - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.consumer
+    environment: &recursos-environment
+      ENVIRONMENT: test
+      LOG_LEVEL: WARNING
+      DATABASE_URL: postgresql+asyncpg://recursos:recursos@recursos-db:5432/recursos_saga_test
+      JWT_SECRET_KEY: saga-local-only
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local-only-elasticmq
+      AWS_SECRET_ACCESS_KEY: local-only-elasticmq
+      SQS_ENDPOINT_URL: http://elasticmq:9324
+      SQS_ORDENS_TO_RECURSOS_URL: http://elasticmq:9324/000000000000/mvp-oficina-ordens-to-recursos-local.fifo
+      SQS_RECURSOS_TO_ORDENS_URL: http://elasticmq:9324/000000000000/mvp-oficina-recursos-to-ordens-local.fifo
+      PUBLISHER_POLL_INTERVAL_SECONDS: "0.1"
+      CONSUMER_WAIT_TIME_SECONDS: "1"
+      CONSUMER_VISIBILITY_TIMEOUT_SECONDS: "10"
+      CONSUMER_HEARTBEAT_SECONDS: "1"
+    volumes:
+      - saga-state:/state
+    depends_on:
+      recursos-migrate:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
+
+  recursos-publisher:
+    build:
+      context: ../mvp-oficina-recursos
+      target: test
+    command:
+      - sh
+      - -c
+      - while [ ! -f /state/ready ]; do sleep 0.1; done; python -m app.publisher
+    environment: *recursos-environment
+    volumes:
+      - saga-state:/state
+    depends_on:
+      recursos-migrate:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
+
+  saga-tests:
+    build:
+      context: .
+      target: test
+    command: pytest -q tests/system/test_distributed_saga.py
+    environment:
+      <<: *ordens-environment
+      RECURSOS_DATABASE_URL: postgresql+asyncpg://recursos:recursos@recursos-db:5432/recursos_saga_test
+      SAGA_READY_FILE: /state/ready
+    volumes:
+      - saga-state:/state
+    depends_on:
+      ordens-publisher:
+        condition: service_started
+      ordens-consumer:
+        condition: service_started
+      recursos-consumer:
+        condition: service_started
+      recursos-publisher:
+        condition: service_started
+
+volumes:
+  saga-state:

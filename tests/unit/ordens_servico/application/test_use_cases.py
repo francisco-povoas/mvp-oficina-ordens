@@ -207,6 +207,7 @@ def mock_uow(mock_os_repo):
     uow.reserva_item_saga_repo = MagicMock()
     uow.reserva_item_saga_repo.salvar = AsyncMock()
     uow.reserva_item_saga_repo.obter_por_chave_idempotencia = AsyncMock(return_value=None)
+    uow.reserva_item_saga_repo.listar_nao_terminais_da_os = AsyncMock(return_value=[])
     uow.outbox = MagicMock()
     uow.outbox.add = AsyncMock()
     uow.commit = AsyncMock()
@@ -900,6 +901,23 @@ class TestConcluirDiagnosticoUseCase:
         assert resultado.diagnostico_concluido_em is not None
         mock_uow.ordem_servico_repo.atualizar.assert_called_once()
         assert mock_uow.ordem_servico_repo.atualizar.call_args.args[0].version == 2
+
+    async def test_saga_pendente_impede_conclusao(self, mock_uow):
+        os = _os_fake(
+            status=StatusOrdemServico.EM_DIAGNOSTICO,
+            diagnostico="Pastilhas gastas",
+        )
+        mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
+        mock_uow.reserva_item_saga_repo.listar_nao_terminais_da_os = AsyncMock(
+            return_value=[MagicMock()]
+        )
+
+        with pytest.raises(OrdemServicoInvalidaError, match="reserva de item pendente"):
+            await ConcluirDiagnosticoOrdemServicoUseCase(uow=mock_uow).execute(
+                str(os.id)
+            )
+
+        mock_uow.ordem_servico_repo.atualizar.assert_not_awaited()
 
     async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
         uc = ConcluirDiagnosticoOrdemServicoUseCase(uow=mock_uow)

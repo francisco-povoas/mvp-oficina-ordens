@@ -11,6 +11,9 @@ from app.infrastructure.messaging.contracts import JsonSchemaMessageValidator
 from app.infrastructure.messaging.inbox import PostgresInboxProcessor, TransactionalMessageHandler
 from app.infrastructure.messaging.sqs import create_sqs_client
 from app.infrastructure.messaging.sqs_consumer import SqsConsumerTransport
+from app.modules.ordens_servico.application.reservation_saga_result_handler import (
+    ReservationSagaResultHandler,
+)
 from app.shared.infra.db import dispose_engine, get_session_factory
 
 RESOURCE_CONSUMER = "ordens.resource-results.v1"
@@ -34,6 +37,12 @@ FINANCIAL_TYPES = frozenset(
 class ConsumerHandlers:
     resource_results: TransactionalMessageHandler | None = None
     financial_events: TransactionalMessageHandler | None = None
+
+
+def default_consumer_handlers() -> ConsumerHandlers:
+    """Ativa somente os resultados implementados; os demais falham sem ACK."""
+
+    return ConsumerHandlers(resource_results=ReservationSagaResultHandler())
 
 
 async def run_consumers(
@@ -61,7 +70,7 @@ async def run_consumers(
         except NotImplementedError:  # pragma: no cover
             signal.signal(signal_number, lambda *_: request_shutdown())
 
-    resolved_handlers = handlers or ConsumerHandlers()
+    resolved_handlers = handlers if handlers is not None else default_consumer_handlers()
     if not resolved_handlers.resource_results and not resolved_handlers.financial_events:
         logger.warning("inbox_consumers_paused_business_handlers_not_installed")
         await stop_event.wait()

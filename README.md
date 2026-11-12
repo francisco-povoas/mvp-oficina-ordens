@@ -15,8 +15,9 @@ A Outbox transacional, o publisher e os consumers técnicos independentes estão
 na Etapa 2. O publisher reivindica lotes com lease e `FOR UPDATE SKIP LOCKED`, valida o
 envelope contra o JSON Schema v1 e publica os quatro comandos de Ordens na fila FIFO de
 Recursos. Os consumers validam e recebem os resultados de Recursos e os eventos de
-Financeiro com Inbox persistente; a Saga e seus handlers funcionais permanecem para o
-checkpoint seguinte.
+Financeiro com Inbox persistente. Os resultados da Saga de reserva e compensação já
+possuem handler funcional; mensagens de estoque e eventos financeiros ainda não
+implementados permanecem *fail-closed* e não recebem ACK.
 
 ## APIs, autenticação e contratos
 
@@ -70,6 +71,16 @@ docker compose -f compose.test.yaml run --rm --build tests
 docker compose -f compose.test.yaml down --volumes --remove-orphans
 ```
 
+Para validar a Saga real entre Ordens e Recursos com duas bases PostgreSQL, ElasticMQ
+e os quatro workers, mantenha os repositórios como diretórios irmãos e execute:
+
+```bash
+./scripts/test-distributed-saga.sh
+```
+
+O runner remove containers e volumes temporários ao terminar, inclusive em caso de
+falha.
+
 O health check fica em `GET /health` na porta `8001`. O CI executa lint, testes
 unitários, contratuais e de integração com PostgreSQL/ElasticMQ, gate global de
 cobertura e build sem publicar a imagem.
@@ -111,12 +122,12 @@ python -m app.consumer
 ./scripts/start-consumer.sh
 ```
 
-Neste checkpoint ainda não há handlers funcionais conectados. Por segurança, a
-composição padrão registra o estado pausado e não consulta nem drena as filas; os
-handlers da Saga serão instalados no Checkpoint E. SIGTERM e SIGINT encerram novos
-polls e aguardam o trabalho em andamento quando houver handlers instalados.
+Por segurança, a composição padrão ativa somente o handler da Saga implementada.
+Tipos ainda sem handler falham sem ACK e permanecem disponíveis para retry/DLQ.
+SIGTERM e SIGINT encerram novos polls e aguardam o trabalho em andamento.
 
 ## Próxima etapa funcional
 
-O Checkpoint E conectará os handlers da Saga de reserva/compensação aos consumers
-técnicos, sem alterar os limites de responsabilidade entre os serviços.
+As coordenações distribuídas de recebimento, consumo e os eventos financeiros serão
+conectadas incrementalmente sem alterar os limites de responsabilidade entre os
+serviços.
