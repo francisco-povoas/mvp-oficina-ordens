@@ -162,7 +162,10 @@ class ReservaItemSaga:
             EstadoReservaItemSaga.REJECTED,
         }:
             return self
-        if self.estado is not EstadoReservaItemSaga.PENDING:
+        if self.estado not in {
+            EstadoReservaItemSaga.PENDING,
+            EstadoReservaItemSaga.RECONCILIATION_REQUIRED,
+        }:
             raise ReservaItemSagaTransicaoInvalidaError(
                 f"Cancelamento pendente não é permitido em '{self.estado.value}'."
             )

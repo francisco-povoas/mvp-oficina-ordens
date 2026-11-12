@@ -8,6 +8,9 @@ from uuid import UUID, uuid4
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.modules.ordens_servico.application.financial_rejection import (
+    try_finalize_financial_rejection,
+)
 from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
     OrdemServicoItem,
     StatusItemNaOS,
@@ -126,6 +129,7 @@ class ReservationSagaResultHandler:
             )
 
         await repo.atualizar(updated_saga)
+        await try_finalize_financial_rejection(session, saga.ordem_servico_id)
         await self._after_effects(message_type, session)
 
     async def _after_effects(

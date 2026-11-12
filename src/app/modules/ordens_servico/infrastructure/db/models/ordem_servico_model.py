@@ -66,6 +66,9 @@ class OrdemServicoModel(SQLModel, table=True):
     quote_decided_at: Optional[datetime] = Field(
         default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True)
     )
+    quote_rejection_reason: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.Text, nullable=True)
+    )
 
     # Projeção financeira mínima; o agregado de pagamento pertence a Financeiro.
     payment_id: Optional[UUID] = Field(

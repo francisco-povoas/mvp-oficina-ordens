@@ -98,6 +98,7 @@ class OrdemServico:
     quote_total: Decimal | None = None
     quote_communicated_at: datetime | None = None
     quote_decided_at: datetime | None = None
+    quote_rejection_reason: str | None = None
 
     # Projeção mínima derivada de Financeiro; não é o agregado de pagamento.
     payment_id: UUID | None = None
@@ -317,6 +318,76 @@ class OrdemServico:
             quote_status=StatusOrcamentoFinanceiro.APROVADO,
             quote_version=quote_version,
             quote_decided_at=approved_at,
+            quote_rejection_reason=None,
+        )
+
+    def registrar_orcamento_recusado(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        reason: str | None,
+        rejected_at: datetime,
+    ) -> "OrdemServico":
+        """Registra a recusa sem antecipar a liberação física das reservas."""
+
+        self._validar_fato_orcamento(
+            quote_id=quote_id,
+            quote_version=quote_version,
+            occurred_at=rejected_at,
+        )
+        normalized_reason = reason
+        if normalized_reason is not None and len(normalized_reason) > 512:
+            raise OrdemServicoInvalidaError("O motivo da recusa excede 512 caracteres.")
+        if self.quote_version is not None:
+            if quote_version < self.quote_version:
+                return self
+            if quote_version == self.quote_version:
+                if self.quote_status is StatusOrcamentoFinanceiro.RECUSADO:
+                    if self.quote_rejection_reason != normalized_reason:
+                        raise OrdemServicoInvalidaError(
+                            "A mesma recusa possui motivo divergente."
+                        )
+                    return self
+                raise OrdemServicoInvalidaError(
+                    "A decisão financeira contradiz a versão já projetada."
+                )
+
+        if self.status is StatusOrdemServico.DIAGNOSTICO_CONCLUIDO:
+            status = StatusOrdemServico.AGUARDANDO_APROVACAO
+        elif self.status is StatusOrdemServico.AGUARDANDO_APROVACAO:
+            status = self.status
+        else:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita orçamento recusado."
+            )
+        return replace(
+            self,
+            status=status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.RECUSADO,
+            quote_version=quote_version,
+            quote_decided_at=rejected_at,
+            quote_rejection_reason=normalized_reason,
+        )
+
+    def encerrar_por_recusa_financeira(self) -> "OrdemServico":
+        """Encerra somente depois que toda limpeza física foi confirmada."""
+
+        if (
+            self.quote_status is not StatusOrcamentoFinanceiro.RECUSADO
+            or self.status is not StatusOrdemServico.AGUARDANDO_APROVACAO
+        ):
+            raise OrdemServicoTransicaoInvalidaError(
+                "A OS só pode encerrar após recusa financeira registrada."
+            )
+        return replace(
+            self,
+            status=StatusOrdemServico.ENCERRADA,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
         )
 
     def _validar_fato_orcamento(

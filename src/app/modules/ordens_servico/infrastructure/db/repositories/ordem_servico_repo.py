@@ -63,6 +63,7 @@ class OrdemServicoRepo:
             quote_total=os.quote_total,
             quote_communicated_at=os.quote_communicated_at,
             quote_decided_at=os.quote_decided_at,
+            quote_rejection_reason=os.quote_rejection_reason,
             payment_id=os.payment_id,
             payment_status=os.payment_status,
             payment_amount=os.payment_amount,
@@ -82,6 +83,7 @@ class OrdemServicoRepo:
             select(OrdemServicoModel)
             .where(OrdemServicoModel.id == _id.value)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         model = result.first()
         return self._os_to_entity(model) if model else None
@@ -113,6 +115,7 @@ class OrdemServicoRepo:
                 quote_total=os.quote_total,
                 quote_communicated_at=os.quote_communicated_at,
                 quote_decided_at=os.quote_decided_at,
+                quote_rejection_reason=os.quote_rejection_reason,
                 payment_id=os.payment_id,
                 payment_status=os.payment_status,
                 payment_amount=os.payment_amount,
@@ -328,6 +331,7 @@ class OrdemServicoRepo:
             ),
             quote_communicated_at=model.quote_communicated_at,
             quote_decided_at=model.quote_decided_at,
+            quote_rejection_reason=model.quote_rejection_reason,
             payment_id=model.payment_id,
             payment_status=model.payment_status,
             payment_amount=(

@@ -7,6 +7,9 @@ from uuid import UUID
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.modules.ordens_servico.application.financial_rejection import (
+    try_finalize_financial_rejection,
+)
 from app.modules.ordens_servico.domain.entities.distributed_operation import (
     DistributedOperation,
     DistributedOperationResult,
@@ -132,6 +135,7 @@ class DistributedStockOperationResultHandler:
                 updated_order = order.entregar()
         if updated_order != order:
             await order_repo.atualizar(updated_order)
+        await try_finalize_financial_rejection(session, operation.ordem_servico_id)
         await self._after_effects(message_type, session)
 
     async def _after_effects(
