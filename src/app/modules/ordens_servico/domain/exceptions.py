@@ -148,3 +148,9 @@ class DistributedOperationIdempotencyConflictError(DomainException):
 
     pass
 
+
+class DistributedOperationNotFoundError(DomainException):
+    """A operação não existe ou não pertence à OS consultada."""
+
+    pass
+

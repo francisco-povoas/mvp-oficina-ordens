@@ -82,6 +82,17 @@ class ReservaItemSagaResponse:
 
 
 @dataclass(frozen=True, kw_only=True)
+class DistributedOperationResponse:
+    operation_id: str
+    operation_type: str
+    ordem_servico_item_id: str
+    state: str
+    terminal_result: Optional[str]
+    reservation_id: Optional[str]
+    status_url: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class OrdemServicoResumoResponse:
     """Resposta resumida — usada na listagem."""
 

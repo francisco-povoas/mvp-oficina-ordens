@@ -13,6 +13,7 @@ from app.modules.ordens_servico.application.dtos.ordem_servico import (
     AdicionarItemNaOSRequest,
     AdicionarServicoNaOSRequest,
     CriarOrdemServicoRequest,
+    DistributedOperationResponse,
     EstatisticaTempoExecucaoServicoResponse,
     ListagemExecucoesServicoResponse,
     OrdemServicoDetalheResponse,
@@ -24,6 +25,7 @@ from app.modules.ordens_servico.application.dtos.ordem_servico import (
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico import StatusOrdemServico
 from app.modules.ordens_servico.domain.exceptions import (
+    DistributedOperationNotFoundError,
     EstoqueReservadoInsuficienteError,
     ItemJaAdicionadoNaOrdemServicoError,
     ItemOrdemServicoStatusInvalidoError,
@@ -58,6 +60,7 @@ from app.modules.ordens_servico.presentation.dependencies import (
     IniciarExecucaoDep,
     ListarExecucoesServicoDep,
     ListarOrdensServicoDep,
+    ObterDistributedOperationDep,
     ObterEstatisticaTempoExecucaoDep,
     ObterOrdemServicoPorIdDep,
     ObterReservaItemSagaDep,
@@ -477,10 +480,13 @@ async def cancelar_operacao_reserva_item(
 
 @router.delete(
     "/{ordem_servico_id}/itens/{ordem_servico_item_id}",
-    status_code=204,
-    summary="Remover Item da OS",
+    status_code=202,
+    summary="Iniciar remoção assíncrona de Item da OS",
     responses={
-        204: {"description": "Item removido da OS com sucesso"},
+        202: {
+            "description": "Coordenação de liberação aceita",
+            "model": DistributedOperationResponse,
+        },
         **_RESPONSES_AUTH,
         **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou vínculo de item não encontrado", "model": ErrorResponse},
@@ -491,14 +497,44 @@ async def cancelar_operacao_reserva_item(
 async def remover_item(
     ordem_servico_id: UUID,
     ordem_servico_item_id: UUID,
+    request: Request,
     usecase: RemoverItemDep,
-) -> None:
+) -> DistributedOperationResponse:
     try:
-        await usecase.execute(str(ordem_servico_id), str(ordem_servico_item_id))
+        return await usecase.execute(
+            str(ordem_servico_id),
+            str(ordem_servico_item_id),
+            correlation_id=request.state.correlation_id,
+        )
     except (OrdemServicoNaoEncontradaError, OrdemServicoItemNaoEncontradoError) as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except (OrdemServicoInvalidaError, OrdemServicoTransicaoInvalidaError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get(
+    "/{ordem_servico_id}/itens/operacoes-estoque/{operation_id}",
+    status_code=200,
+    summary="Consultar operação distribuída de estoque",
+    responses={
+        200: {
+            "description": "Estado persistido da coordenação",
+            "model": DistributedOperationResponse,
+        },
+        **_RESPONSES_AUTH,
+        404: {"description": "Operação não encontrada", "model": ErrorResponse},
+    },
+    dependencies=[_ADMIN_ATENDENTE_MECANICO],
+)
+async def obter_operacao_distribuida(
+    ordem_servico_id: UUID,
+    operation_id: UUID,
+    usecase: ObterDistributedOperationDep,
+) -> DistributedOperationResponse:
+    try:
+        return await usecase.execute(ordem_servico_id, operation_id)
+    except DistributedOperationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

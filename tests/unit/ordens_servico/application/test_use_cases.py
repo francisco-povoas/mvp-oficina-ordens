@@ -9,9 +9,7 @@ import pytest
 
 from app.integrations.resources import (
     ItemEstoqueNaoEncontradoError,
-    LiberarReservaResult,
     RecursoSnapshot,
-    ResourceDependencyUnavailable,
     ServicoNaoEncontradoError,
 )
 from app.integrations.resources import (
@@ -194,6 +192,7 @@ def mock_os_repo():
     repo.obter_servico_ativo_por_servico_id = AsyncMock(return_value=None)
     repo.salvar_item = AsyncMock()
     repo.obter_item_por_id = AsyncMock(return_value=None)
+    repo.obter_item_por_id_com_lock = AsyncMock(return_value=None)
     repo.listar_itens_da_os = AsyncMock(return_value=[])
     repo.atualizar_item = AsyncMock()
     repo.obter_item_ativo_por_item_estoque_id = AsyncMock(return_value=None)
@@ -207,7 +206,13 @@ def mock_uow(mock_os_repo):
     uow.reserva_item_saga_repo = MagicMock()
     uow.reserva_item_saga_repo.salvar = AsyncMock()
     uow.reserva_item_saga_repo.obter_por_chave_idempotencia = AsyncMock(return_value=None)
+    uow.reserva_item_saga_repo.obter_por_ordem_servico_item_id = AsyncMock(
+        return_value=None
+    )
     uow.reserva_item_saga_repo.listar_nao_terminais_da_os = AsyncMock(return_value=[])
+    uow.distributed_operation_repo = MagicMock()
+    uow.distributed_operation_repo.get_by_business_key = AsyncMock(return_value=None)
+    uow.distributed_operation_repo.save = AsyncMock()
     uow.outbox = MagicMock()
     uow.outbox.add = AsyncMock()
     uow.commit = AsyncMock()
@@ -794,88 +799,115 @@ class TestAdicionarItemNaOrdemServicoUseCase:
 # ---------------------------------------------------------------------------
 
 class TestRemoverItemDaOrdemServicoUseCase:
-    async def test_remove_reservado_somente_apos_resultado_de_liberacao(
-        self, mock_uow, mock_recursos
-    ):
+    @staticmethod
+    def _saga_reservada(os: OrdemServico, item: OrdemServicoItem) -> ReservaItemSaga:
+        saga = ReservaItemSaga.iniciar(
+            saga_id=uuid4(),
+            operation_id=uuid4(),
+            ordem_servico_id=os.id.value,
+            ordem_servico_item_id=item.id.value,
+            resource_id=item.item_estoque_id,
+            quantity=item.quantidade,
+            correlation_id=uuid4(),
+            idempotency_key=f"remove-{uuid4()}",
+            request_hash="a" * 64,
+            reserve_message_id=uuid4(),
+        )
+        return saga.registrar_reserva(
+            reservation_id=uuid4(),
+            message_id=uuid4(),
+            resultado_em=_agora(),
+            resource_name=item.nome_item,
+            resource_description=None,
+            resource_unit_price=item.valor_unitario,
+        )
+
+    async def test_remove_reservado_emite_comando_sem_cancelar_item(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         osi = _os_item_fake(str(os.id), status=StatusItemNaOS.RESERVADO)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.ordem_servico_repo.obter_item_por_id = AsyncMock(return_value=osi)
-        mock_recursos.liberar_reserva.side_effect = lambda command: LiberarReservaResult(
-            operation_id=command.operation_id,
-            recurso_id=command.recurso_id,
-            quantidade=command.quantidade,
-            reservation_id=uuid4(),
-            liberado_em=_agora(),
+        mock_uow.ordem_servico_repo.obter_item_por_id_com_lock = AsyncMock(
+            return_value=osi
+        )
+        mock_uow.reserva_item_saga_repo.obter_por_ordem_servico_item_id = AsyncMock(
+            return_value=self._saga_reservada(os, osi)
         )
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
-        await uc.execute(str(os.id), str(osi.id))
+        result = await RemoverItemDaOrdemServicoUseCase(uow=mock_uow).execute(
+            str(os.id), str(osi.id), correlation_id=uuid4()
+        )
 
-        mock_recursos.liberar_reserva.assert_awaited_once()
-        mock_uow.ordem_servico_repo.atualizar_item.assert_called_once()
-        osi_cancelado = mock_uow.ordem_servico_repo.atualizar_item.call_args[0][0]
-        assert osi_cancelado.status == StatusItemNaOS.CANCELADO
+        assert result.state == "PENDING"
+        mock_uow.distributed_operation_repo.save.assert_awaited_once()
+        mock_uow.outbox.add.assert_awaited_once()
+        mock_uow.ordem_servico_repo.atualizar_item.assert_not_awaited()
 
-    async def test_remove_item_a_receber_sem_operacao_fisica(self, mock_uow, mock_recursos):
+    async def test_remove_item_a_receber_sem_operacao_fisica(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         osi = _os_item_fake(str(os.id), status=StatusItemNaOS.A_RECEBER)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.ordem_servico_repo.obter_item_por_id = AsyncMock(return_value=osi)
+        mock_uow.ordem_servico_repo.obter_item_por_id_com_lock = AsyncMock(
+            return_value=osi
+        )
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
-        await uc.execute(str(os.id), str(osi.id))
+        result = await RemoverItemDaOrdemServicoUseCase(uow=mock_uow).execute(
+            str(os.id), str(osi.id), correlation_id=uuid4()
+        )
 
-        mock_recursos.liberar_reserva.assert_not_awaited()
+        assert result.terminal_result == "NO_RESERVATION"
+        mock_uow.outbox.add.assert_not_awaited()
         mock_uow.ordem_servico_repo.atualizar_item.assert_called_once()
 
-    async def test_os_nao_encontrada_levanta_erro(self, mock_uow, mock_recursos):
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
+    async def test_os_nao_encontrada_levanta_erro(self, mock_uow):
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
         with pytest.raises(OrdemServicoNaoEncontradaError):
-            await uc.execute(str(uuid4()), str(uuid4()))
+            await uc.execute(str(uuid4()), str(uuid4()), correlation_id=uuid4())
 
-    async def test_os_status_errado_levanta_erro(self, mock_uow, mock_recursos):
+    async def test_os_status_errado_levanta_erro(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.RECEBIDA)
+        osi = _os_item_fake(str(os.id), status=StatusItemNaOS.A_RECEBER)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
+        mock_uow.ordem_servico_repo.obter_item_por_id_com_lock = AsyncMock(
+            return_value=osi
+        )
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
         with pytest.raises(OrdemServicoTransicaoInvalidaError):
-            await uc.execute(str(os.id), str(uuid4()))
+            await uc.execute(str(os.id), str(osi.id), correlation_id=uuid4())
 
-    async def test_item_nao_encontrado_levanta_erro(self, mock_uow, mock_recursos):
+    async def test_item_nao_encontrado_levanta_erro(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
         with pytest.raises(OrdemServicoItemNaoEncontradoError):
-            await uc.execute(str(os.id), str(uuid4()))
+            await uc.execute(str(os.id), str(uuid4()), correlation_id=uuid4())
 
-    async def test_item_ja_cancelado_levanta_erro(self, mock_uow, mock_recursos):
+    async def test_item_ja_cancelado_levanta_erro(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         osi = _os_item_fake(str(os.id), status=StatusItemNaOS.CANCELADO)
         mock_uow.ordem_servico_repo.obter_por_id = AsyncMock(return_value=os)
-        mock_uow.ordem_servico_repo.obter_item_por_id = AsyncMock(return_value=osi)
+        mock_uow.ordem_servico_repo.obter_item_por_id_com_lock = AsyncMock(
+            return_value=osi
+        )
 
-        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow, recursos=mock_recursos)
+        uc = RemoverItemDaOrdemServicoUseCase(uow=mock_uow)
         with pytest.raises(OrdemServicoInvalidaError):
-            await uc.execute(str(os.id), str(osi.id))
+            await uc.execute(str(os.id), str(osi.id), correlation_id=uuid4())
 
-    async def test_indisponibilidade_nao_cancela_reserva_local(
-        self, mock_uow, mock_recursos
-    ):
+    async def test_reserva_sem_identidade_autoritativa_nao_emite_comando(self, mock_uow):
         os = _os_fake(status=StatusOrdemServico.EM_DIAGNOSTICO)
         osi = _os_item_fake(str(os.id), status=StatusItemNaOS.RESERVADO)
         mock_uow.ordem_servico_repo.obter_por_id.return_value = os
-        mock_uow.ordem_servico_repo.obter_item_por_id.return_value = osi
-        mock_recursos.liberar_reserva.side_effect = ResourceDependencyUnavailable("Etapa 2")
+        mock_uow.ordem_servico_repo.obter_item_por_id_com_lock.return_value = osi
 
-        with pytest.raises(ResourceDependencyUnavailable):
-            await RemoverItemDaOrdemServicoUseCase(
-                uow=mock_uow, recursos=mock_recursos
-            ).execute(str(os.id), str(osi.id))
+        with pytest.raises(OrdemServicoInvalidaError):
+            await RemoverItemDaOrdemServicoUseCase(uow=mock_uow).execute(
+                str(os.id), str(osi.id), correlation_id=uuid4()
+            )
 
         mock_uow.ordem_servico_repo.atualizar_item.assert_not_awaited()
-        mock_uow.ordem_servico_repo.atualizar.assert_not_awaited()
+        mock_uow.outbox.add.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

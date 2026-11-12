@@ -263,6 +263,17 @@ class OrdemServicoRepo:
         model = result.first()
         return self._osi_to_entity(model) if model else None
 
+    async def obter_item_por_id_com_lock(
+        self, _id: ID
+    ) -> Optional[OrdemServicoItem]:
+        result = await self.session.exec(
+            select(OrdemServicoItemModel)
+            .where(OrdemServicoItemModel.id == _id.value)
+            .with_for_update()
+        )
+        model = result.first()
+        return self._osi_to_entity(model) if model else None
+
     # -----------------------------------------------------------------------
     # Conversão model → entidade
     # -----------------------------------------------------------------------

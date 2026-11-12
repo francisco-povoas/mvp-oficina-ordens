@@ -42,6 +42,17 @@ class ReservaItemSagaRepo:
         model = result.first()
         return self._to_entity(model) if model else None
 
+    async def obter_por_ordem_servico_item_id(
+        self, ordem_servico_item_id: UUID
+    ) -> ReservaItemSaga | None:
+        result = await self.session.exec(
+            select(ReservaItemSagaModel).where(
+                ReservaItemSagaModel.ordem_servico_item_id == ordem_servico_item_id
+            )
+        )
+        model = result.first()
+        return self._to_entity(model) if model else None
+
     async def obter_por_operation_id_com_lock(
         self, operation_id: UUID
     ) -> ReservaItemSaga | None:

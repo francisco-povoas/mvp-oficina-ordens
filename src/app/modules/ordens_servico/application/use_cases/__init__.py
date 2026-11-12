@@ -37,6 +37,9 @@ from app.modules.ordens_servico.application.use_cases.listar_ordens_servico impo
 from app.modules.ordens_servico.application.use_cases.obter_estatistica_tempo_execucao_servico import (
     ObterEstatisticaTempoExecucaoServicoUseCase,
 )
+from app.modules.ordens_servico.application.use_cases.obter_operacao_distribuida import (
+    ObterDistributedOperationUseCase,
+)
 from app.modules.ordens_servico.application.use_cases.obter_ordem_servico_por_id import (
     ObterOrdemServicoPorIdUseCase,
 )
@@ -60,6 +63,7 @@ __all__ = [
     "CriarOrdemServicoUseCase",
     "ListarOrdensServicoUseCase",
     "ObterOrdemServicoPorIdUseCase",
+    "ObterDistributedOperationUseCase",
     "ObterReservaItemSagaUseCase",
     "IniciarDiagnosticoOrdemServicoUseCase",
     "RegistrarDiagnosticoOrdemServicoUseCase",

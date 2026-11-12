@@ -13,6 +13,10 @@ class ReservaItemSagaRepo(Protocol):
 
     async def obter_por_operation_id(self, operation_id: UUID) -> ReservaItemSaga | None: ...
 
+    async def obter_por_ordem_servico_item_id(
+        self, ordem_servico_item_id: UUID
+    ) -> ReservaItemSaga | None: ...
+
     async def obter_por_operation_id_com_lock(
         self, operation_id: UUID
     ) -> ReservaItemSaga | None: ...

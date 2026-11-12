@@ -5,18 +5,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.consumer import default_consumer_handlers
-from app.modules.ordens_servico.application.reservation_saga_result_handler import (
-    ReservationSagaResultHandler,
+from app.modules.ordens_servico.application.resource_result_handler import (
+    ResourceResultHandler,
 )
 from app.modules.ordens_servico.domain.exceptions import (
-    ResultadoReservaItemSagaInvalidoError,
+    DistributedOperationInvalidError,
 )
 
 
-def test_composicao_padrao_ativa_somente_resultados_da_saga() -> None:
+def test_composicao_padrao_ativa_saga_e_liberacao_distribuida() -> None:
     handlers = default_consumer_handlers()
 
-    assert isinstance(handlers.resource_results, ReservationSagaResultHandler)
+    assert isinstance(handlers.resource_results, ResourceResultHandler)
     assert handlers.financial_events is None
 
 
@@ -27,7 +27,7 @@ async def test_resultado_fora_da_saga_permanece_fail_closed(
     handler = default_consumer_handlers().resource_results
     assert handler is not None
 
-    with pytest.raises(ResultadoReservaItemSagaInvalidoError, match="não suporta"):
+    with pytest.raises(DistributedOperationInvalidError, match="não suportado"):
         await handler.handle(
             {"message_type": message_type},
             MagicMock(),

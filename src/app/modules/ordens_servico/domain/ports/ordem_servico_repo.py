@@ -49,6 +49,10 @@ class OrdemServicoRepo(Protocol):
 
     async def obter_item_por_id(self, _id: ID) -> Optional[OrdemServicoItem]: ...
 
+    async def obter_item_por_id_com_lock(
+        self, _id: ID
+    ) -> Optional[OrdemServicoItem]: ...
+
     async def listar_itens_da_os(
         self, ordem_servico_id: ID
     ) -> list[OrdemServicoItem]: ...

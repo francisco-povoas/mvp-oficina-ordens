@@ -1,5 +1,7 @@
 """Coordenação persistente leve das operações distribuídas de estoque."""
 
+import hashlib
+import json
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -61,6 +63,44 @@ def _utc_now() -> datetime:
 def _require_aware(value: datetime | None, field: str) -> None:
     if value is not None and (value.tzinfo is None or value.utcoffset() is None):
         raise DistributedOperationInvalidError(f"{field} deve possuir timezone.")
+
+
+def distributed_operation_business_key(
+    operation_type: DistributedOperationType,
+    *,
+    ordem_servico_item_id: UUID,
+    reservation_id: UUID | None = None,
+) -> str:
+    if operation_type is DistributedOperationType.CONSUME:
+        if reservation_id is None:
+            raise DistributedOperationInvalidError(
+                "Consumo exige reserva para compor a chave de negócio."
+            )
+        identity = reservation_id
+    else:
+        identity = ordem_servico_item_id
+    return f"{operation_type.value}:{identity}"
+
+
+def distributed_operation_request_hash(
+    *,
+    operation_type: DistributedOperationType,
+    ordem_servico_id: UUID,
+    ordem_servico_item_id: UUID,
+    resource_id: UUID,
+    quantity: int,
+    reservation_id: UUID | None,
+) -> str:
+    payload = {
+        "operation_type": operation_type.value,
+        "order_id": str(ordem_servico_id),
+        "order_item_id": str(ordem_servico_item_id),
+        "resource_id": str(resource_id),
+        "quantity": quantity,
+        "reservation_id": str(reservation_id) if reservation_id else None,
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, kw_only=True)
