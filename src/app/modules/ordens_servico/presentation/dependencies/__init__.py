@@ -231,9 +231,9 @@ def get_concluir_diagnostico(uow: _UoWDep) -> ConcluirDiagnosticoOrdemServicoUse
 
 
 def get_confirmar_recebimento_item(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
+    uow: _UoWDep,
 ) -> ConfirmarRecebimentoItemDaOrdemServicoUseCase:
-    return ConfirmarRecebimentoItemDaOrdemServicoUseCase(uow=uow, recursos=recursos)
+    return ConfirmarRecebimentoItemDaOrdemServicoUseCase(uow=uow)
 
 
 def get_iniciar_execucao(uow: _UoWDep) -> IniciarExecucaoOrdemServicoUseCase:

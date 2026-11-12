@@ -20,7 +20,7 @@ def test_composicao_padrao_ativa_saga_e_liberacao_distribuida() -> None:
     assert handlers.financial_events is None
 
 
-@pytest.mark.parametrize("message_type", ["BackorderedItemReceived", "ReservationConsumed"])
+@pytest.mark.parametrize("message_type", ["ReservationConsumed"])
 async def test_resultado_fora_da_saga_permanece_fail_closed(
     message_type: str,
 ) -> None:

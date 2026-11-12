@@ -573,10 +573,13 @@ async def concluir_diagnostico(
 
 @router.patch(
     "/{ordem_servico_id}/itens/{ordem_servico_item_id}/confirmar-recebimento",
-    status_code=200,
-    summary="Confirmar Recebimento de Item Pendente",
+    status_code=202,
+    summary="Iniciar recebimento assíncrono de Item Pendente",
     responses={
-        200: {"description": "Recebimento de item confirmado com sucesso", "model": OrdemServicoDetalheResponse},
+        202: {
+            "description": "Coordenação de recebimento aceita",
+            "model": DistributedOperationResponse,
+        },
         **_RESPONSES_AUTH,
         **_RESPONSE_RECURSOS_INDISPONIVEIS,
         404: {"description": "OS ou item não encontrado", "model": ErrorResponse},
@@ -587,12 +590,14 @@ async def concluir_diagnostico(
 async def confirmar_recebimento_item(
     ordem_servico_id: UUID,
     ordem_servico_item_id: UUID,
+    request: Request,
     usecase: ConfirmarRecebimentoItemDep,
-) -> OrdemServicoDetalheResponse:
+) -> DistributedOperationResponse:
     try:
         return await usecase.execute(
             str(ordem_servico_id),
             str(ordem_servico_item_id),
+            correlation_id=request.state.correlation_id,
         )
     except OrdemServicoNaoEncontradaError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

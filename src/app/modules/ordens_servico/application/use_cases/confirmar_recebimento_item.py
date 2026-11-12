@@ -1,21 +1,32 @@
-"""Use case: consolidar na OS um recebimento confirmado por Recursos."""
+"""Inicia o recebimento assíncrono de um item em backorder."""
 
 from dataclasses import dataclass
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
-from app.integrations.resources import ReceberItemPendenteCommand, RecursosOperacoesPort
 from app.logger import setup_logger
-from app.modules.ordens_servico.application.dtos.ordem_servico import OrdemServicoDetalheResponse
-from app.modules.ordens_servico.application.use_cases.obter_ordem_servico_por_id import _to_detalhe
+from app.modules.ordens_servico.application.dtos.ordem_servico import (
+    DistributedOperationResponse,
+)
+from app.modules.ordens_servico.application.use_cases.obter_operacao_distribuida import (
+    distributed_operation_response,
+)
+from app.modules.ordens_servico.domain.entities.distributed_operation import (
+    DistributedOperation,
+    DistributedOperationType,
+    distributed_operation_business_key,
+    distributed_operation_request_hash,
+)
 from app.modules.ordens_servico.domain.entities.ordem_servico import StatusOrdemServico
 from app.modules.ordens_servico.domain.entities.ordem_servico_item import StatusItemNaOS
 from app.modules.ordens_servico.domain.exceptions import (
-    OrdemServicoInvalidaError,
+    ItemOrdemServicoStatusInvalidoError,
     OrdemServicoItemNaoEncontradoError,
     OrdemServicoNaoEncontradaError,
     OrdemServicoTransicaoInvalidaError,
 )
 from app.modules.ordens_servico.domain.ports.ordem_servico_uow import OrdemServicoUnitOfWork
+from app.shared.outbox import OutboxMessage
 from app.shared.value_objects.id import ID
 
 logger = setup_logger(__name__)
@@ -24,75 +35,101 @@ logger = setup_logger(__name__)
 @dataclass(frozen=True)
 class ConfirmarRecebimentoItemDaOrdemServicoUseCase:
     uow: OrdemServicoUnitOfWork
-    recursos: RecursosOperacoesPort
 
     async def execute(
         self,
         ordem_servico_id: str,
         ordem_servico_item_id: str,
-    ) -> OrdemServicoDetalheResponse:
+        *,
+        correlation_id: UUID,
+    ) -> DistributedOperationResponse:
         os_id = ID.from_string(ordem_servico_id)
         item_id = ID.from_string(ordem_servico_item_id)
 
         async with self.uow:
-            ordem = await self.uow.ordem_servico_repo.obter_por_id(os_id)
-            if not ordem:
+            order = await self.uow.ordem_servico_repo.obter_por_id(os_id)
+            if order is None:
                 raise OrdemServicoNaoEncontradaError(
                     f"OS com ID {ordem_servico_id} não encontrada."
                 )
-            if ordem.status != StatusOrdemServico.AGUARDANDO_ITENS:
-                raise OrdemServicoTransicaoInvalidaError(
-                    "Só é possível confirmar recebimento de item para OS com status "
-                    f"'AGUARDANDO_ITENS'. Status atual: '{ordem.status.value}'."
-                )
-
-            item = await self.uow.ordem_servico_repo.obter_item_por_id(item_id)
-            if not item or str(item.ordem_servico_id) != ordem_servico_id:
+            item = await self.uow.ordem_servico_repo.obter_item_por_id_com_lock(item_id)
+            if item is None or item.ordem_servico_id != os_id.value:
                 raise OrdemServicoItemNaoEncontradoError(
                     "Item informado não pertence à ordem de serviço."
                 )
-            item_reservado = item.confirmar_recebimento()
 
-            command = ReceberItemPendenteCommand(
-                operation_id=uuid4(),
-                ordem_servico_id=ordem.id.value,
+            business_key = distributed_operation_business_key(
+                DistributedOperationType.RECEIVE,
                 ordem_servico_item_id=item.id.value,
-                recurso_id=item.item_estoque_id,
-                quantidade=item.quantidade,
             )
-            resultado = await self.recursos.receber_item_pendente(command)
-            if (
-                resultado.operation_id != command.operation_id
-                or resultado.recurso_id != command.recurso_id
-                or resultado.quantidade != command.quantidade
-            ):
-                raise OrdemServicoInvalidaError(
-                    "Recursos devolveu resultado incompatível com o recebimento solicitado."
+            request_hash = distributed_operation_request_hash(
+                operation_type=DistributedOperationType.RECEIVE,
+                ordem_servico_id=os_id.value,
+                ordem_servico_item_id=item.id.value,
+                resource_id=item.item_estoque_id,
+                quantity=item.quantidade,
+                reservation_id=None,
+            )
+            existing = await self.uow.distributed_operation_repo.get_by_business_key(
+                business_key
+            )
+            if existing:
+                existing.validate_repetition(request_hash)
+                return distributed_operation_response(existing)
+
+            if order.status is not StatusOrdemServico.AGUARDANDO_ITENS:
+                raise OrdemServicoTransicaoInvalidaError(
+                    "Só é possível confirmar recebimento de item para OS com status "
+                    f"'AGUARDANDO_ITENS'. Status atual: '{order.status.value}'."
+                )
+            if item.status is not StatusItemNaOS.A_RECEBER:
+                raise ItemOrdemServicoStatusInvalidoError(
+                    "Só é possível receber item em status 'A_RECEBER'. "
+                    f"Status atual: '{item.status.value}'."
                 )
 
-            await self.uow.ordem_servico_repo.atualizar_item(item_reservado)
-            itens = await self.uow.ordem_servico_repo.listar_itens_da_os(os_id)
-            itens_atualizados = [
-                item_reservado if i.id == item.id else i
-                for i in itens
-            ]
-            tem_a_receber = any(
-                i.status == StatusItemNaOS.A_RECEBER
-                for i in itens_atualizados
-                if i.status != StatusItemNaOS.CANCELADO
+            now = datetime.now(UTC)
+            operation_id = uuid4()
+            message_id = uuid4()
+            operation = DistributedOperation.start(
+                operation_id=operation_id,
+                operation_type=DistributedOperationType.RECEIVE,
+                ordem_servico_id=os_id.value,
+                ordem_servico_item_id=item.id.value,
+                resource_id=item.item_estoque_id,
+                quantity=item.quantidade,
+                business_key=business_key,
+                request_hash=request_hash,
+                correlation_id=correlation_id,
+                command_message_id=message_id,
+                reservation_id=None,
+                now=now,
             )
-            os_atualizada = ordem.registrar_recebimento_item(
-                ainda_tem_item_a_receber=tem_a_receber
+            await self.uow.distributed_operation_repo.save(operation)
+            await self.uow.outbox.add(
+                OutboxMessage(
+                    message_id=message_id,
+                    aggregate_type="DistributedOperation",
+                    aggregate_id=operation_id,
+                    event_type="ReceiveBackorderedItem.v1",
+                    event_version=1,
+                    payload={
+                        "order_id": str(order.id.value),
+                        "order_item_id": str(item.id.value),
+                        "resource_id": str(item.item_estoque_id),
+                        "quantity": item.quantidade,
+                    },
+                    correlation_id=correlation_id,
+                    causation_id=None,
+                    saga_id=None,
+                    occurred_at=now,
+                )
             )
-            await self.uow.ordem_servico_repo.atualizar(os_atualizada)
-            servicos = await self.uow.ordem_servico_repo.listar_servicos_da_os(os_id)
-            await self.uow.commit()
-
             logger.info(
-                "Recebimento do item '%s' consolidado na OS '%s': %s",
-                ordem_servico_item_id,
-                ordem_servico_id,
-                os_atualizada.status.value,
+                "Recebimento coordenado operation_id=%s ordem_id=%s item_id=%s",
+                operation_id,
+                order.id.value,
+                item.id.value,
             )
 
-        return _to_detalhe(os_atualizada, servicos, itens_atualizados)
+        return distributed_operation_response(operation)

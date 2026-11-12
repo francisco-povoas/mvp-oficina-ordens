@@ -26,7 +26,19 @@ from app.shared.value_objects.id import ID
 class DistributedStockOperationResultHandler:
     """Usa a sessão transacional já aberta pela Inbox de Ordens."""
 
-    _SUPPORTED_TYPES = {"ReservationReleased"}
+    _SUPPORTED_TYPES = {"ReservationReleased", "BackorderedItemReceived"}
+    _OPERATION_TYPES = {
+        "ReservationReleased": DistributedOperationType.RELEASE,
+        "BackorderedItemReceived": DistributedOperationType.RECEIVE,
+    }
+    _RESULTS = {
+        "ReservationReleased": DistributedOperationResult.RESERVATION_RELEASED,
+        "BackorderedItemReceived": DistributedOperationResult.BACKORDERED_ITEM_RECEIVED,
+    }
+    _TIMESTAMP_FIELDS = {
+        "ReservationReleased": "released_at",
+        "BackorderedItemReceived": "received_at",
+    }
 
     async def handle(
         self, envelope: Mapping[str, object], session: AsyncSession
@@ -45,10 +57,10 @@ class DistributedStockOperationResultHandler:
             )
         self._validate_envelope(envelope, operation)
         payload = self._payload(envelope)
-        self._validate_release(payload, operation)
-        result_at = self._timestamp(payload, "released_at")
+        self._validate_payload(payload, operation)
+        result_at = self._timestamp(payload, self._TIMESTAMP_FIELDS[message_type])
         completed = operation.complete(
-            result=DistributedOperationResult.RESERVATION_RELEASED,
+            result=self._RESULTS[message_type],
             result_message_id=self._uuid(envelope, "message_id"),
             reservation_id=self._uuid(payload, "reservation_id"),
             received_at=result_at,
@@ -61,12 +73,31 @@ class DistributedStockOperationResultHandler:
             raise DistributedOperationInvalidError(
                 "A liberação não corresponde a um item persistido da OS."
             )
-        if item.status is not StatusItemNaOS.RESERVADO:
-            raise DistributedOperationInvalidError(
-                "Somente item RESERVADO pode ser cancelado após liberação."
+        if message_type == "ReservationReleased":
+            if item.status is not StatusItemNaOS.RESERVADO:
+                raise DistributedOperationInvalidError(
+                    "Somente item RESERVADO pode ser cancelado após liberação."
+                )
+            updated_item = replace(item, status=StatusItemNaOS.CANCELADO)
+            updated_order = order.registrar_alteracao()
+        else:
+            if item.status is not StatusItemNaOS.A_RECEBER:
+                raise DistributedOperationInvalidError(
+                    "Somente item A_RECEBER pode consolidar recebimento."
+                )
+            updated_item = item.confirmar_recebimento()
+            items = await order_repo.listar_itens_da_os(ID(order.id.value))
+            still_backordered = any(
+                candidate.status is StatusItemNaOS.A_RECEBER
+                for candidate in items
+                if candidate.id != item.id
+                and candidate.status is not StatusItemNaOS.CANCELADO
             )
-        await order_repo.atualizar_item(replace(item, status=StatusItemNaOS.CANCELADO))
-        await order_repo.atualizar(order.registrar_alteracao())
+            updated_order = order.registrar_recebimento_item(
+                ainda_tem_item_a_receber=still_backordered
+            )
+        await order_repo.atualizar_item(updated_item)
+        await order_repo.atualizar(updated_order)
         await repo.update(completed)
         await self._after_effects(message_type, session)
 
@@ -91,18 +122,23 @@ class DistributedStockOperationResultHandler:
             raise DistributedOperationInvalidError("correlation_id divergente.")
         if cls._uuid(envelope, "causation_id") != operation.command_message_id:
             raise DistributedOperationInvalidError("causation_id divergente.")
-        if operation.operation_type is not DistributedOperationType.RELEASE:
+        expected_type = cls._OPERATION_TYPES[str(envelope["message_type"])]
+        if operation.operation_type is not expected_type:
             raise DistributedOperationInvalidError(
-                "ReservationReleased pertence a uma operação de outro tipo."
+                "O resultado pertence a uma operação de outro tipo."
             )
 
     @classmethod
-    def _validate_release(
+    def _validate_payload(
         cls,
         payload: Mapping[str, object],
         operation: DistributedOperation,
     ) -> None:
-        if cls._uuid(payload, "reservation_id") != operation.reservation_id:
+        result_reservation_id = cls._uuid(payload, "reservation_id")
+        if (
+            operation.operation_type is DistributedOperationType.RELEASE
+            and result_reservation_id != operation.reservation_id
+        ):
             raise DistributedOperationInvalidError("reservation_id divergente.")
         if cls._uuid(payload, "resource_id") != operation.resource_id:
             raise DistributedOperationInvalidError("resource_id divergente.")
