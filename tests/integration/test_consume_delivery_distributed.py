@@ -80,16 +80,18 @@ async def _seed(engine: AsyncEngine, item_count: int) -> tuple[UUID, list[UUID]]
                 "(id, cliente_id, veiculo_id, status, queixa_inicial, diagnostico, "
                 "criado_em, atualizado_em, iniciado_diagnostico_em, "
                 "diagnostico_concluido_em, version, payment_id, payment_status, "
-                "payment_amount, payment_confirmed_at, payment_quote_version) VALUES "
+                "payment_amount, payment_confirmed_at, payment_quote_id, "
+                "payment_quote_version) VALUES "
                 "(:id, :customer_id, :vehicle_id, 'FINALIZADA', 'Ruído', 'Correia', "
                 ":now, :now, :now, :now, 1, :payment_id, 'CONFIRMED', 200.00, "
-                ":now, 1)"
+                ":now, :quote_id, 1)"
             ),
             params={
                 "id": order_id,
                 "customer_id": customer_id,
                 "vehicle_id": vehicle_id,
                 "payment_id": uuid4(),
+                "quote_id": uuid4(),
                 "now": now,
             },
         )

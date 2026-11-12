@@ -68,6 +68,7 @@ class OrdemServicoRepo:
             payment_status=os.payment_status,
             payment_amount=os.payment_amount,
             payment_confirmed_at=os.payment_confirmed_at,
+            payment_quote_id=os.payment_quote_id,
             payment_quote_version=os.payment_quote_version,
         )
         self.session.add(model)
@@ -120,6 +121,7 @@ class OrdemServicoRepo:
                 payment_status=os.payment_status,
                 payment_amount=os.payment_amount,
                 payment_confirmed_at=os.payment_confirmed_at,
+                payment_quote_id=os.payment_quote_id,
                 payment_quote_version=os.payment_quote_version,
             )
             .execution_options(synchronize_session=False)
@@ -340,6 +342,7 @@ class OrdemServicoRepo:
                 else None
             ),
             payment_confirmed_at=model.payment_confirmed_at,
+            payment_quote_id=model.payment_quote_id,
             payment_quote_version=model.payment_quote_version,
         )
 

@@ -29,6 +29,7 @@ def _ordem_com_metadados() -> OrdemServico:
         payment_status="CONFIRMED",
         payment_amount=Decimal("120.00"),
         payment_confirmed_at=agora,
+        payment_quote_id=uuid4(),
         payment_quote_version=4,
     )
 
@@ -45,6 +46,7 @@ def test_fluxo_de_diagnostico_preserva_metadados_e_incrementa_cada_mutacao() -> 
     assert concluida.payment_status == original.payment_status
     assert concluida.payment_amount == original.payment_amount
     assert concluida.payment_confirmed_at == original.payment_confirmed_at
+    assert concluida.payment_quote_id == original.payment_quote_id
     assert concluida.payment_quote_version == original.payment_quote_version
     assert concluida.cliente_id == original.cliente_id
     assert concluida.veiculo_id == original.veiculo_id

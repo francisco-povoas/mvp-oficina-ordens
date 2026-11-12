@@ -218,6 +218,7 @@ class EntregarOrdemServicoUseCase:
             )
         updated = order.com_pagamento_confirmado(
             payment_id=payment.payment_id,
+            quote_id=quote.quote_id,
             amount=payment.amount,
             confirmed_at=payment.confirmed_at,
             quote_version=quote.quote_version,

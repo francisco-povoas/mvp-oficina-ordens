@@ -51,6 +51,7 @@ def _paid_order() -> OrdemServico:
         payment_status="CONFIRMED",
         payment_amount=Decimal("270.00"),
         payment_confirmed_at=now,
+        payment_quote_id=uuid4(),
         payment_quote_version=1,
     )
 
@@ -154,6 +155,7 @@ async def test_reconcilia_pagamento_e_entrega_sem_consumos() -> None:
         payment_status=None,
         payment_amount=None,
         payment_confirmed_at=None,
+        payment_quote_id=None,
         payment_quote_version=None,
     )
     order_repo, _, _, uow = _uow(order, [])
@@ -196,6 +198,7 @@ async def test_falha_fechada_para_pagamento_unknown() -> None:
         payment_status=None,
         payment_amount=None,
         payment_confirmed_at=None,
+        payment_quote_id=None,
         payment_quote_version=None,
     )
     order_repo, _, _, uow = _uow(order, [])

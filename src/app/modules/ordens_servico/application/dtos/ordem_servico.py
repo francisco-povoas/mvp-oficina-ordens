@@ -135,6 +135,7 @@ class OrdemServicoDetalheResponse:
     payment_status: Optional[str] = None
     payment_amount: Optional[Decimal] = None
     payment_confirmed_at: Optional[datetime] = None
+    payment_quote_id: Optional[str] = None
     payment_quote_version: Optional[int] = None
     servicos: list[OrdemServicoServicoResponse] = field(default_factory=list)
     itens: list[OrdemServicoItemResponse] = field(default_factory=list)

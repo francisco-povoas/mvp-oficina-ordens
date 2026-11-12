@@ -105,6 +105,7 @@ class OrdemServico:
     payment_status: str | None = None
     payment_amount: Decimal | None = None
     payment_confirmed_at: datetime | None = None
+    payment_quote_id: UUID | None = None
     payment_quote_version: int | None = None
 
     def __post_init__(self) -> None:
@@ -462,6 +463,7 @@ class OrdemServico:
         self,
         *,
         payment_id: UUID,
+        quote_id: UUID,
         amount: Decimal,
         confirmed_at: datetime,
         quote_version: int,
@@ -470,14 +472,58 @@ class OrdemServico:
 
         if amount <= Decimal("0") or quote_version < 1:
             raise OrdemServicoInvalidaError("Projeção financeira inválida.")
+        if confirmed_at.tzinfo is None or confirmed_at.utcoffset() is None:
+            raise OrdemServicoInvalidaError(
+                "A confirmação do pagamento deve possuir timezone."
+            )
+        if self.status not in {
+            StatusOrdemServico.FINALIZADA,
+            StatusOrdemServico.ENTREGUE,
+        }:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita pagamento confirmado."
+            )
+        if self.quote_id is not None and self.quote_id != quote_id:
+            raise OrdemServicoInvalidaError(
+                "O pagamento pertence a outro orçamento da OS."
+            )
+        if self.quote_version is not None and self.quote_version > quote_version:
+            raise OrdemServicoInvalidaError(
+                "O pagamento referencia versão anterior do orçamento."
+            )
+        if self.quote_status is StatusOrcamentoFinanceiro.RECUSADO:
+            raise OrdemServicoInvalidaError(
+                "Pagamento confirmado não pode referenciar orçamento recusado."
+            )
+        if self.quote_total is not None and amount < self.quote_total:
+            raise OrdemServicoInvalidaError(
+                "O pagamento confirmado é menor que o orçamento projetado."
+            )
+        if self.payment_id is not None:
+            if (
+                self.payment_id == payment_id
+                and self.payment_status == "CONFIRMED"
+                and self.payment_quote_id == quote_id
+                and self.payment_quote_version == quote_version
+                and self.payment_amount == amount
+                and self.payment_confirmed_at == confirmed_at
+            ):
+                return self
+            raise OrdemServicoInvalidaError(
+                "A OS já possui outro pagamento confirmado."
+            )
         return replace(
             self,
             atualizado_em=datetime.now(UTC),
             version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.APROVADO,
+            quote_version=quote_version,
             payment_id=payment_id,
             payment_status="CONFIRMED",
             payment_amount=amount,
             payment_confirmed_at=confirmed_at,
+            payment_quote_id=quote_id,
             payment_quote_version=quote_version,
         )
 

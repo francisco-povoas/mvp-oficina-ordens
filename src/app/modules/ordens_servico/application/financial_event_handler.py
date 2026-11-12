@@ -40,7 +40,12 @@ from app.shared.value_objects.id import ID
 class FinancialEventHandler:
     """Usa a transação já aberta pela Inbox para projeção e estado da OS."""
 
-    _SUPPORTED_TYPES = {"QuoteCommunicated", "QuoteApproved", "QuoteRejected"}
+    _SUPPORTED_TYPES = {
+        "QuoteCommunicated",
+        "QuoteApproved",
+        "QuoteRejected",
+        "PaymentConfirmed",
+    }
 
     async def handle(
         self, envelope: Mapping[str, object], session: AsyncSession
@@ -79,7 +84,7 @@ class FinancialEventHandler:
                     item.status is StatusItemNaOS.A_RECEBER for item in items
                 ),
             )
-        else:
+        elif message_type == "QuoteRejected":
             updated, cleanup_complete = await self._reject_quote(
                 envelope=envelope,
                 payload=payload,
@@ -87,6 +92,18 @@ class FinancialEventHandler:
                 quote_id=quote_id,
                 quote_version=quote_version,
                 session=session,
+            )
+        else:
+            if payload.get("status") != "CONFIRMED":
+                raise FinancialEventInvalidError(
+                    "PaymentConfirmed exige status CONFIRMED."
+                )
+            updated = order.com_pagamento_confirmado(
+                payment_id=self._uuid(payload, "payment_id"),
+                quote_id=quote_id,
+                amount=self._money(payload, "amount"),
+                confirmed_at=self._timestamp(payload, "confirmed_at"),
+                quote_version=quote_version,
             )
         if updated != order:
             await repo.atualizar(updated)

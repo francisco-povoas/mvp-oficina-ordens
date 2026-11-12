@@ -83,6 +83,9 @@ class OrdemServicoModel(SQLModel, table=True):
     payment_confirmed_at: Optional[datetime] = Field(
         default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True)
     )
+    payment_quote_id: Optional[UUID] = Field(
+        default=None, sa_column=sa.Column(sa.Uuid, nullable=True)
+    )
     payment_quote_version: Optional[int] = Field(
         default=None, sa_column=sa.Column(sa.Integer, nullable=True)
     )

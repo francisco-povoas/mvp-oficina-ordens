@@ -476,11 +476,13 @@ async def test_fluxos_distribuidos_persistem_efeitos_e_idempotencia() -> None:
                     "UPDATE ordem_servico SET status = 'FINALIZADA', "
                     "payment_id = :payment_id, payment_status = 'CONFIRMED', "
                     "payment_amount = 50.00, payment_confirmed_at = :now, "
-                    "payment_quote_version = 1, atualizado_em = :now, "
+                    "payment_quote_id = :quote_id, payment_quote_version = 1, "
+                    "atualizado_em = :now, "
                     "version = version + 1 WHERE id = :order_id"
                 ),
                 params={
                     "payment_id": uuid4(),
+                    "quote_id": uuid4(),
                     "now": now,
                     "order_id": backordered_context["ordem_servico_id"],
                 },
