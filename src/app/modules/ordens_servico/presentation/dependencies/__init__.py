@@ -17,6 +17,7 @@ from app.modules.clientes.infrastructure.db.repositories.cliente_repo import Cli
 from app.modules.ordens_servico.application.use_cases import (
     AdicionarItemNaOrdemServicoUseCase,
     AdicionarServicoNaOrdemServicoUseCase,
+    CancelarReservaItemSagaUseCase,
     ConcluirDiagnosticoOrdemServicoUseCase,
     ConfirmarRecebimentoItemDaOrdemServicoUseCase,
     CriarOrdemServicoUseCase,
@@ -192,6 +193,12 @@ def get_obter_reserva_item_saga(repo: _SagaRepoDep) -> ObterReservaItemSagaUseCa
     return ObterReservaItemSagaUseCase(repo=repo)
 
 
+def get_cancelar_reserva_item_saga(
+    uow: _UoWDep,
+) -> CancelarReservaItemSagaUseCase:
+    return CancelarReservaItemSagaUseCase(uow=uow)
+
+
 def get_remover_item(
     uow: _UoWDep, recursos: _RecursosOperacoesDep
 ) -> RemoverItemDaOrdemServicoUseCase:
@@ -267,6 +274,10 @@ AdicionarItemDep = Annotated[AdicionarItemNaOrdemServicoUseCase, Depends(get_adi
 ObterReservaItemSagaDep = Annotated[
     ObterReservaItemSagaUseCase,
     Depends(get_obter_reserva_item_saga),
+]
+CancelarReservaItemSagaDep = Annotated[
+    CancelarReservaItemSagaUseCase,
+    Depends(get_cancelar_reserva_item_saga),
 ]
 RemoverItemDep = Annotated[RemoverItemDaOrdemServicoUseCase, Depends(get_remover_item)]
 ConcluirDiagnosticoDep = Annotated[ConcluirDiagnosticoOrdemServicoUseCase, Depends(get_concluir_diagnostico)]

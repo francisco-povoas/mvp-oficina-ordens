@@ -107,3 +107,16 @@ def test_inclusao_de_item_e_assincrona_e_exige_idempotency_key() -> None:
     )
     assert header["in"] == "header"
     assert header["required"] is True
+
+
+def test_cancelamento_pendente_e_assincrono_e_identificado_por_operacao() -> None:
+    operation = create_app(Settings(environment="test")).openapi()["paths"][
+        "/api/v1/ordens-servico/{ordem_servico_id}/itens/operacoes/"
+        "{operation_id}/cancelamento"
+    ]["post"]
+
+    assert "202" in operation["responses"]
+    assert {parameter["name"] for parameter in operation["parameters"]} >= {
+        "ordem_servico_id",
+        "operation_id",
+    }

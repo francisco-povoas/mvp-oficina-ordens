@@ -157,7 +157,10 @@ class ReservaItemSaga:
     def solicitar_cancelamento(self, *, agora: datetime | None = None) -> "ReservaItemSaga":
         if self.estado in {EstadoReservaItemSaga.CANCEL_REQUESTED, EstadoReservaItemSaga.RELEASING}:
             return self
-        if self.estado is EstadoReservaItemSaga.COMPENSATED:
+        if self.estado in {
+            EstadoReservaItemSaga.COMPENSATED,
+            EstadoReservaItemSaga.REJECTED,
+        }:
             return self
         if self.estado is not EstadoReservaItemSaga.PENDING:
             raise ReservaItemSagaTransicaoInvalidaError(

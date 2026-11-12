@@ -42,6 +42,17 @@ class ReservaItemSagaRepo:
         model = result.first()
         return self._to_entity(model) if model else None
 
+    async def obter_por_operation_id_com_lock(
+        self, operation_id: UUID
+    ) -> ReservaItemSaga | None:
+        result = await self.session.exec(
+            select(ReservaItemSagaModel)
+            .where(ReservaItemSagaModel.operation_id == operation_id)
+            .with_for_update()
+        )
+        model = result.first()
+        return self._to_entity(model) if model else None
+
     async def obter_por_chave_idempotencia(
         self,
         *,

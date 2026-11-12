@@ -1,9 +1,10 @@
 """Aplicação transacional dos resultados de reserva produzidos por Recursos."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -13,6 +14,7 @@ from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
 )
 from app.modules.ordens_servico.domain.entities.reserva_item_saga import (
     CodigoRejeicaoReservaItemSaga,
+    EstadoReservaItemSaga,
     ReservaItemSaga,
 )
 from app.modules.ordens_servico.domain.exceptions import (
@@ -24,6 +26,8 @@ from app.modules.ordens_servico.infrastructure.db.repositories.ordem_servico_rep
 from app.modules.ordens_servico.infrastructure.db.repositories.reserva_item_saga_repo import (
     ReservaItemSagaRepo,
 )
+from app.shared.infra.db.outbox_repository import PostgresOutboxRepository
+from app.shared.outbox import OutboxMessage
 from app.shared.value_objects.id import ID
 
 
@@ -34,7 +38,17 @@ class ReservationSagaResultHandler:
         "ResourceReserved",
         "ItemBackordered",
         "ReservationRejected",
+        "ReservationReleased",
     }
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        message_id_factory: Callable[[], UUID] = uuid4,
+    ) -> None:
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self.message_id_factory = message_id_factory
 
     async def handle(
         self, envelope: Mapping[str, object], session: AsyncSession
@@ -47,7 +61,7 @@ class ReservationSagaResultHandler:
 
         operation_id = self._uuid(envelope, "operation_id")
         repo = ReservaItemSagaRepo(session)
-        saga = await repo.obter_por_operation_id(operation_id)
+        saga = await repo.obter_por_operation_id_com_lock(operation_id)
         if saga is None:
             raise ResultadoReservaItemSagaInvalidoError(
                 f"Saga da operação '{operation_id}' não encontrada."
@@ -62,27 +76,54 @@ class ReservationSagaResultHandler:
                 "O recurso do resultado não corresponde ao recurso da Saga."
             )
 
+        release_message_id = None
+        if (
+            message_type == "ResourceReserved"
+            and saga.estado is EstadoReservaItemSaga.CANCEL_REQUESTED
+        ):
+            release_message_id = self.message_id_factory()
+
         if message_type == "ResourceReserved":
-            updated_saga, item = self._reserved(saga, payload, message_id)
+            updated_saga, item = self._reserved(
+                saga,
+                payload,
+                message_id,
+                release_message_id=release_message_id,
+            )
         elif message_type == "ItemBackordered":
             updated_saga, item = self._backordered(saga, payload, message_id)
-        else:
+        elif message_type == "ReservationRejected":
             updated_saga = self._rejected(saga, payload, message_id)
             item = None
+        else:
+            updated_saga = self._released(saga, payload, message_id)
+            item = None
 
-        if item is not None:
-            order_repo = OrdemServicoRepo(session)
-            order = await order_repo.obter_por_id(ID(saga.ordem_servico_id))
-            if order is None:
-                raise ResultadoReservaItemSagaInvalidoError(
-                    f"OS '{saga.ordem_servico_id}' da Saga não encontrada."
+        if message_type == "ReservationReleased":
+            await self._cancel_materialized_item(saga, session)
+        elif item is not None:
+            await self._materialize_item(saga, item, session)
+
+        if release_message_id is not None:
+            await PostgresOutboxRepository(session).add(
+                OutboxMessage(
+                    message_id=release_message_id,
+                    aggregate_type="ReservaItemSaga",
+                    aggregate_id=saga.operation_id,
+                    event_type="ReleaseReservation.v1",
+                    event_version=1,
+                    payload={
+                        "reservation_id": str(updated_saga.reservation_id),
+                        "resource_id": str(saga.resource_id),
+                        "quantity": saga.quantity,
+                        "reason": "PENDING_CANCELLATION",
+                    },
+                    correlation_id=saga.correlation_id,
+                    causation_id=message_id,
+                    saga_id=saga.id,
+                    occurred_at=self.clock(),
                 )
-            if await order_repo.obter_item_por_id(item.id) is not None:
-                raise ResultadoReservaItemSagaInvalidoError(
-                    f"Item '{item.id}' da Saga já foi materializado."
-                )
-            await order_repo.salvar_item(item)
-            await order_repo.atualizar(order.registrar_alteracao())
+            )
 
         await repo.atualizar(updated_saga)
         await self._after_effects(message_type, session)
@@ -97,6 +138,8 @@ class ReservationSagaResultHandler:
         saga: ReservaItemSaga,
         payload: Mapping[str, object],
         message_id: UUID,
+        *,
+        release_message_id: UUID | None,
     ) -> tuple[ReservaItemSaga, OrdemServicoItem]:
         quantity = self._positive_int(payload, "quantity")
         self._require_quantity(saga, quantity)
@@ -108,6 +151,7 @@ class ReservationSagaResultHandler:
             resource_name=snapshot[0],
             resource_description=snapshot[1],
             resource_unit_price=snapshot[2],
+            release_message_id=release_message_id,
         )
         return updated, self._item(saga, snapshot, StatusItemNaOS.RESERVADO)
 
@@ -132,7 +176,12 @@ class ReservationSagaResultHandler:
             resource_description=snapshot[1],
             resource_unit_price=snapshot[2],
         )
-        return updated, self._item(saga, snapshot, StatusItemNaOS.A_RECEBER)
+        status = (
+            StatusItemNaOS.CANCELADO
+            if updated.estado is EstadoReservaItemSaga.COMPENSATED
+            else StatusItemNaOS.A_RECEBER
+        )
+        return updated, self._item(saga, snapshot, status)
 
     def _rejected(
         self,
@@ -157,6 +206,60 @@ class ReservationSagaResultHandler:
             message_id=message_id,
             resultado_em=self._timestamp(payload, "rejected_at"),
         )
+
+    def _released(
+        self,
+        saga: ReservaItemSaga,
+        payload: Mapping[str, object],
+        message_id: UUID,
+    ) -> ReservaItemSaga:
+        quantity = self._positive_int(payload, "quantity")
+        self._require_quantity(saga, quantity)
+        return saga.registrar_liberacao(
+            reservation_id=self._uuid(payload, "reservation_id"),
+            message_id=message_id,
+            resultado_em=self._timestamp(payload, "released_at"),
+        )
+
+    @staticmethod
+    async def _materialize_item(
+        saga: ReservaItemSaga,
+        item: OrdemServicoItem,
+        session: AsyncSession,
+    ) -> None:
+        order_repo = OrdemServicoRepo(session)
+        order = await order_repo.obter_por_id(ID(saga.ordem_servico_id))
+        if order is None:
+            raise ResultadoReservaItemSagaInvalidoError(
+                f"OS '{saga.ordem_servico_id}' da Saga não encontrada."
+            )
+        if await order_repo.obter_item_por_id(item.id) is not None:
+            raise ResultadoReservaItemSagaInvalidoError(
+                f"Item '{item.id}' da Saga já foi materializado."
+            )
+        await order_repo.salvar_item(item)
+        await order_repo.atualizar(order.registrar_alteracao())
+
+    @staticmethod
+    async def _cancel_materialized_item(
+        saga: ReservaItemSaga,
+        session: AsyncSession,
+    ) -> None:
+        order_repo = OrdemServicoRepo(session)
+        order = await order_repo.obter_por_id(ID(saga.ordem_servico_id))
+        item = await order_repo.obter_item_por_id(ID(saga.ordem_servico_item_id))
+        if order is None or item is None:
+            raise ResultadoReservaItemSagaInvalidoError(
+                "A liberação exige item materializado na OS da Saga."
+            )
+        if item.status is not StatusItemNaOS.RESERVADO:
+            raise ResultadoReservaItemSagaInvalidoError(
+                "Somente item reservado pode ser cancelado pela compensação."
+            )
+        await order_repo.atualizar_item(
+            replace(item, status=StatusItemNaOS.CANCELADO)
+        )
+        await order_repo.atualizar(order.registrar_alteracao())
 
     @staticmethod
     def _item(

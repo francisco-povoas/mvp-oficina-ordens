@@ -19,10 +19,14 @@ from app.infrastructure.messaging.inbox import (
 from app.modules.ordens_servico.application.reservation_saga_result_handler import (
     ReservationSagaResultHandler,
 )
+from app.modules.ordens_servico.application.use_cases.cancelar_reserva_item_saga import (
+    CancelarReservaItemSagaUseCase,
+)
 from app.modules.ordens_servico.domain.entities.reserva_item_saga import (
     ReservaItemSaga,
 )
 from app.modules.ordens_servico.domain.exceptions import (
+    ReservaItemSagaTransicaoInvalidaError,
     ResultadoReservaItemSagaInvalidoError,
 )
 from app.modules.ordens_servico.infrastructure.db.models.ordem_servico_item_model import (
@@ -37,6 +41,10 @@ from app.modules.ordens_servico.infrastructure.db.models.reserva_item_saga_model
 from app.modules.ordens_servico.infrastructure.db.repositories.reserva_item_saga_repo import (
     ReservaItemSagaRepo,
 )
+from app.modules.ordens_servico.infrastructure.db.uow.ordem_servico_uow import (
+    OrdemServicoUnitOfWork,
+)
+from app.shared.infra.db.outbox_model import OutboxMessageModel
 
 
 def _factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
@@ -137,6 +145,12 @@ def _envelope(saga: ReservaItemSaga, message_type: str) -> dict[str, object]:
             "detail": "Recurso removido antes do processamento",
             "rejected_at": timestamp,
         },
+        "ReservationReleased": {
+            "reservation_id": str(saga.operation_id),
+            "resource_id": str(saga.resource_id),
+            "quantity": saga.quantity,
+            "released_at": timestamp,
+        },
     }
     return {
         "message_id": str(uuid4()),
@@ -149,6 +163,12 @@ def _envelope(saga: ReservaItemSaga, message_type: str) -> dict[str, object]:
         "saga_id": str(saga.id),
         "payload": payloads[message_type],
     }
+
+
+async def _cancel(engine: AsyncEngine, saga: ReservaItemSaga):
+    return await CancelarReservaItemSagaUseCase(
+        OrdemServicoUnitOfWork(_factory(engine)())
+    ).execute(saga.ordem_servico_id, saga.operation_id)
 
 
 def _processor(
@@ -349,4 +369,206 @@ async def test_consumidores_concorrentes_aplicam_um_resultado(
         )
         stored_saga = await session.get(ReservaItemSagaModel, saga.id)
     assert item_count == 1
+    assert stored_saga is not None and stored_saga.version == 2
+
+
+async def test_cancelamento_pendente_e_repeticao_nao_presumem_reserva(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+
+    first = await _cancel(db_engine, saga)
+    repeated = await _cancel(db_engine, saga)
+
+    assert first == repeated
+    assert first.estado == "CANCEL_REQUESTED"
+    async with _factory(db_engine)() as session:
+        stored_saga = await session.get(ReservaItemSagaModel, saga.id)
+        outbox_count = await session.scalar(
+            select(func.count()).select_from(OutboxMessageModel)
+        )
+        item_count = await session.scalar(
+            select(func.count()).select_from(OrdemServicoItemModel)
+        )
+    assert stored_saga is not None and stored_saga.version == 2
+    assert stored_saga.cancellation_requested_at is not None
+    assert outbox_count == item_count == 0
+
+
+async def test_reserva_tardia_publica_release_e_resultado_conclui_compensacao(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+    await _cancel(db_engine, saga)
+    reserved = _envelope(saga, "ResourceReserved")
+
+    assert (
+        await _processor(db_engine).process(reserved, receive_count=1)
+        is ProcessingOutcome.PROCESSED
+    )
+
+    async with _factory(db_engine)() as session:
+        releasing = await ReservaItemSagaRepo(session).obter_por_id(saga.id)
+        outbox = (await session.exec(select(OutboxMessageModel))).scalar_one()
+        item = await session.get(OrdemServicoItemModel, saga.ordem_servico_item_id)
+    assert releasing is not None
+    assert releasing.estado.value == "RELEASING"
+    assert releasing.terminal_result is None
+    assert outbox.event_type == "ReleaseReservation.v1"
+    assert outbox.aggregate_id == saga.operation_id
+    assert outbox.causation_id == UUID(str(reserved["message_id"]))
+    assert outbox.published_at is None
+    assert item is not None and item.status == "RESERVADO"
+
+    async with _factory(db_engine)() as session, session.begin():
+        published = await session.get(OutboxMessageModel, outbox.id)
+        assert published is not None
+        published.published_at = datetime.now(UTC)
+        session.add(published)
+
+    released = _envelope(releasing, "ReservationReleased")
+    assert (
+        await _processor(db_engine).process(released, receive_count=1)
+        is ProcessingOutcome.PROCESSED
+    )
+    assert (
+        await _processor(db_engine).process(released, receive_count=2)
+        is ProcessingOutcome.DUPLICATE
+    )
+
+    async with _factory(db_engine)() as session:
+        compensated = await session.get(ReservaItemSagaModel, saga.id)
+        item = await session.get(OrdemServicoItemModel, saga.ordem_servico_item_id)
+        order = await session.get(OrdemServicoModel, saga.ordem_servico_id)
+        outbox_count = await session.scalar(
+            select(func.count()).select_from(OutboxMessageModel)
+        )
+    assert compensated is not None
+    assert (compensated.estado, compensated.terminal_result) == (
+        "COMPENSATED",
+        "RESERVATION_RELEASED",
+    )
+    assert item is not None and item.status == "CANCELADO"
+    assert order is not None and order.version == 4
+    assert outbox_count == 1
+
+
+async def test_backorder_tardio_compensa_sem_release_fisico(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+    await _cancel(db_engine, saga)
+
+    assert (
+        await _processor(db_engine).process(
+            _envelope(saga, "ItemBackordered"), receive_count=1
+        )
+        is ProcessingOutcome.PROCESSED
+    )
+
+    async with _factory(db_engine)() as session:
+        compensated = await session.get(ReservaItemSagaModel, saga.id)
+        item = await session.get(OrdemServicoItemModel, saga.ordem_servico_item_id)
+        outbox_count = await session.scalar(
+            select(func.count()).select_from(OutboxMessageModel)
+        )
+    assert compensated is not None
+    assert (compensated.estado, compensated.terminal_result) == (
+        "COMPENSATED",
+        "NO_RESERVATION",
+    )
+    assert item is not None and item.status == "CANCELADO"
+    assert outbox_count == 0
+
+
+async def test_rejeicao_tardia_prevalece_sem_release_fisico(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+    await _cancel(db_engine, saga)
+
+    assert (
+        await _processor(db_engine).process(
+            _envelope(saga, "ReservationRejected"), receive_count=1
+        )
+        is ProcessingOutcome.PROCESSED
+    )
+
+    async with _factory(db_engine)() as session:
+        rejected = await session.get(ReservaItemSagaModel, saga.id)
+        item_count = await session.scalar(
+            select(func.count()).select_from(OrdemServicoItemModel)
+        )
+        outbox_count = await session.scalar(
+            select(func.count()).select_from(OutboxMessageModel)
+        )
+    assert rejected is not None and rejected.estado == "REJECTED"
+    assert rejected.cancellation_requested_at is not None
+    assert item_count == outbox_count == 0
+
+
+async def test_falha_apos_criar_release_reverte_inbox_saga_item_e_outbox(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+    await _cancel(db_engine, saga)
+    reserved = _envelope(saga, "ResourceReserved")
+
+    with pytest.raises(RuntimeError, match="falha após efeitos"):
+        await _processor(db_engine, _FailAfterEffects()).process(
+            reserved, receive_count=1
+        )
+
+    async with _factory(db_engine)() as session:
+        stored_saga = await session.get(ReservaItemSagaModel, saga.id)
+        item_count = await session.scalar(
+            select(func.count()).select_from(OrdemServicoItemModel)
+        )
+        outbox_count = await session.scalar(
+            select(func.count()).select_from(OutboxMessageModel)
+        )
+        inbox_count = await session.scalar(
+            select(func.count()).select_from(InboxMessageModel)
+        )
+    assert stored_saga is not None and stored_saga.estado == "CANCEL_REQUESTED"
+    assert stored_saga.version == 2
+    assert item_count == outbox_count == inbox_count == 0
+
+    assert (
+        await _processor(db_engine).process(reserved, receive_count=2)
+        is ProcessingOutcome.PROCESSED
+    )
+
+
+async def test_resultado_release_antes_da_reserva_nao_reabre_saga(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+    released = _envelope(saga, "ReservationReleased")
+
+    with pytest.raises(ReservaItemSagaTransicaoInvalidaError):
+        await _processor(db_engine).process(released, receive_count=1)
+
+    async with _factory(db_engine)() as session:
+        stored_saga = await session.get(ReservaItemSagaModel, saga.id)
+        inbox_count = await session.scalar(
+            select(func.count()).select_from(InboxMessageModel)
+        )
+    assert stored_saga is not None and stored_saga.estado == "PENDING"
+    assert inbox_count == 0
+
+
+async def test_cancelamentos_concorrentes_persistem_uma_transicao(
+    db_engine: AsyncEngine,
+) -> None:
+    saga = await _persist_context(db_engine)
+
+    first, second = await asyncio.gather(
+        _cancel(db_engine, saga),
+        _cancel(db_engine, saga),
+    )
+
+    assert first.estado == second.estado == "CANCEL_REQUESTED"
+    async with _factory(db_engine)() as session:
+        stored_saga = await session.get(ReservaItemSagaModel, saga.id)
     assert stored_saga is not None and stored_saga.version == 2

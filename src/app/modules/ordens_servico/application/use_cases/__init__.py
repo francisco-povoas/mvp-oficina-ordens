@@ -4,6 +4,9 @@ from app.modules.ordens_servico.application.use_cases.adicionar_item_na_ordem_se
 from app.modules.ordens_servico.application.use_cases.adicionar_servico_na_ordem_servico import (
     AdicionarServicoNaOrdemServicoUseCase,
 )
+from app.modules.ordens_servico.application.use_cases.cancelar_reserva_item_saga import (
+    CancelarReservaItemSagaUseCase,
+)
 from app.modules.ordens_servico.application.use_cases.concluir_diagnostico import (
     ConcluirDiagnosticoOrdemServicoUseCase,
 )
@@ -63,6 +66,7 @@ __all__ = [
     "AdicionarServicoNaOrdemServicoUseCase",
     "RemoverServicoDaOrdemServicoUseCase",
     "AdicionarItemNaOrdemServicoUseCase",
+    "CancelarReservaItemSagaUseCase",
     "RemoverItemDaOrdemServicoUseCase",
     "ConcluirDiagnosticoOrdemServicoUseCase",
     "ConfirmarRecebimentoItemDaOrdemServicoUseCase",

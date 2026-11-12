@@ -40,6 +40,7 @@ from app.modules.ordens_servico.domain.exceptions import (
     OrdemServicoTransicaoInvalidaError,
     ReservaItemSagaIdempotenciaConflitanteError,
     ReservaItemSagaNaoEncontradaError,
+    ReservaItemSagaTransicaoInvalidaError,
     ServicoJaAdicionadoNaOrdemServicoError,
     TempoExecutadoInvalidoError,
 )
@@ -47,6 +48,7 @@ from app.modules.ordens_servico.domain.filters.ordem_servico import ListarOrdens
 from app.modules.ordens_servico.presentation.dependencies import (
     AdicionarItemDep,
     AdicionarServicoDep,
+    CancelarReservaItemSagaDep,
     ConcluirDiagnosticoDep,
     ConfirmarRecebimentoItemDep,
     CriarOrdemServicoDep,
@@ -435,6 +437,37 @@ async def obter_operacao_reserva_item(
         return await usecase.execute(ordem_servico_id, operation_id)
     except ReservaItemSagaNaoEncontradaError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post(
+    "/{ordem_servico_id}/itens/operacoes/{operation_id}/cancelamento",
+    status_code=202,
+    summary="Solicitar cancelamento de uma inclusão pendente",
+    responses={
+        202: {
+            "description": "Intenção de cancelamento persistida",
+            "model": ReservaItemSagaResponse,
+        },
+        **_RESPONSES_AUTH,
+        404: {"description": "OS ou operação não encontrada", "model": ErrorResponse},
+        409: {
+            "description": "Operação já concluída como inclusão",
+            "model": ErrorResponse,
+        },
+    },
+    dependencies=[_ADMIN_MECANICO],
+)
+async def cancelar_operacao_reserva_item(
+    ordem_servico_id: UUID,
+    operation_id: UUID,
+    usecase: CancelarReservaItemSagaDep,
+) -> ReservaItemSagaResponse:
+    try:
+        return await usecase.execute(ordem_servico_id, operation_id)
+    except (OrdemServicoNaoEncontradaError, ReservaItemSagaNaoEncontradaError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ReservaItemSagaTransicaoInvalidaError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
