@@ -26,6 +26,9 @@ class QuoteFinancialStatus:
     quote_version: int
     status: str
     total: Decimal
+    communicated_at: datetime | None = None
+    decided_at: datetime | None = None
+    rejection_reason: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -34,6 +37,10 @@ class PaymentFinancialStatus:
     status: str
     amount: Decimal
     confirmed_at: datetime | None
+    quote_id: UUID | None = None
+    quote_version: int | None = None
+    attempt_number: int = 1
+    payment_version: int = 1
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,11 +61,18 @@ class _QuoteResponse(BaseModel):
     quote_version: int = Field(ge=1)
     status: str
     total: Decimal = Field(ge=0)
+    communicated_at: datetime | None
+    decided_at: datetime | None
+    rejection_reason: str | None
 
 
 class _PaymentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     payment_id: UUID
+    quote_id: UUID
+    quote_version: int = Field(ge=1)
+    attempt_number: int = Field(ge=1)
+    payment_version: int = Field(ge=1)
     status: str
     amount: Decimal = Field(gt=0)
     confirmed_at: datetime | None
@@ -137,6 +151,9 @@ class FinanceHTTPClient(FinanceStatusPort):
                 quote_version=payload.quote.quote_version,
                 status=payload.quote.status,
                 total=payload.quote.total,
+                communicated_at=payload.quote.communicated_at,
+                decided_at=payload.quote.decided_at,
+                rejection_reason=payload.quote.rejection_reason,
             )
             if payload.quote
             else None
@@ -144,6 +161,10 @@ class FinanceHTTPClient(FinanceStatusPort):
         payment = (
             PaymentFinancialStatus(
                 payment_id=payload.payment.payment_id,
+                quote_id=payload.payment.quote_id,
+                quote_version=payload.payment.quote_version,
+                attempt_number=payload.payment.attempt_number,
+                payment_version=payload.payment.payment_version,
                 status=payload.payment.status,
                 amount=payload.payment.amount,
                 confirmed_at=payload.payment.confirmed_at,
