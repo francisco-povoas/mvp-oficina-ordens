@@ -57,6 +57,7 @@ def _to_detalhe(
         payment_status=os.payment_status,
         payment_amount=os.payment_amount,
         payment_confirmed_at=os.payment_confirmed_at,
+        payment_quote_id=str(os.payment_quote_id) if os.payment_quote_id else None,
         payment_quote_version=os.payment_quote_version,
         servicos=[_servico_to_response(s) for s in servicos],
         itens=[_item_to_response(i) for i in itens],

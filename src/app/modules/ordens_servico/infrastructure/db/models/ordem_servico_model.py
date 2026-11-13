@@ -48,6 +48,28 @@ class OrdemServicoModel(SQLModel, table=True):
     )
     version: int = Field(default=1, sa_column=sa.Column(sa.Integer, nullable=False))
 
+    quote_id: Optional[UUID] = Field(
+        default=None, sa_column=sa.Column(sa.Uuid, nullable=True)
+    )
+    quote_status: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.String(20), nullable=True)
+    )
+    quote_version: Optional[int] = Field(
+        default=None, sa_column=sa.Column(sa.Integer, nullable=True)
+    )
+    quote_total: Optional[Decimal] = Field(
+        default=None, sa_column=sa.Column(sa.Numeric(precision=12, scale=2), nullable=True)
+    )
+    quote_communicated_at: Optional[datetime] = Field(
+        default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True)
+    )
+    quote_decided_at: Optional[datetime] = Field(
+        default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True)
+    )
+    quote_rejection_reason: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.Text, nullable=True)
+    )
+
     # Projeção financeira mínima; o agregado de pagamento pertence a Financeiro.
     payment_id: Optional[UUID] = Field(
         default=None, sa_column=sa.Column(sa.Uuid, nullable=True)
@@ -60,6 +82,9 @@ class OrdemServicoModel(SQLModel, table=True):
     )
     payment_confirmed_at: Optional[datetime] = Field(
         default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True)
+    )
+    payment_quote_id: Optional[UUID] = Field(
+        default=None, sa_column=sa.Column(sa.Uuid, nullable=True)
     )
     payment_quote_version: Optional[int] = Field(
         default=None, sa_column=sa.Column(sa.Integer, nullable=True)

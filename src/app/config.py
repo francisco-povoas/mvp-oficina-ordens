@@ -17,6 +17,44 @@ class Settings(BaseSettings):
     jwt_issuer: str = "mvp-oficina-ordens"
     jwt_user_audience: str = "mvp-oficina-users"
     service_clients_json: str = "{}"
+    internal_auth_url: str = "http://ordens:8000/internal/v1/auth/token"
+    resources_base_url: str = "http://recursos:8000"
+    finance_base_url: str = "http://financeiro:8000"
+    service_client_id: str = "mvp-oficina-ordens"
+    service_client_secret: str = ""
+    internal_connect_timeout_seconds: float = 1.0
+    internal_read_timeout_seconds: float = 2.0
+    aws_region: str = "us-east-1"
+    sqs_endpoint_url: str | None = None
+    sqs_ordens_to_recursos_url: str = ""
+    sqs_recursos_to_ordens_url: str = ""
+    sqs_financeiro_to_ordens_url: str = ""
+    sqs_connect_timeout_seconds: float = 2.0
+    sqs_read_timeout_seconds: float = 25.0
+    sqs_send_timeout_seconds: float = 5.0
+    publisher_worker_id: str = ""
+    publisher_batch_size: int = 10
+    publisher_lease_seconds: float = 30.0
+    publisher_poll_interval_seconds: float = 1.0
+    publisher_max_attempts: int = 8
+    publisher_initial_backoff_seconds: float = 1.0
+    publisher_max_backoff_seconds: float = 60.0
+    publisher_contract_schema_path: str = "contracts/messages/saga-stock.v1.schema.json"
+    consumer_batch_size: int = 10
+    consumer_concurrency: int = 4
+    consumer_wait_time_seconds: int = 20
+    consumer_visibility_timeout_seconds: int = 60
+    consumer_heartbeat_seconds: float = 20.0
+    resource_consumer_schema_path: str = "contracts/messages/saga-stock.v1.schema.json"
+    financial_consumer_schema_path: str = (
+        "contracts/vendor/financeiro/financial-events.v1.schema.json"
+    )
+    reconciliation_batch_size: int = 50
+    reconciliation_concurrency: int = 4
+    reconciliation_timeout_seconds: float = 3.0
+    reconciliation_stale_after_seconds: float = 300.0
+    reconciliation_recheck_seconds: float = 300.0
+    reconciliation_max_batches: int = 10
 
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
@@ -25,6 +63,69 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be provided at runtime")
         if self.environment == "prod" and self.jwt_secret_key == "unsafe":
             raise ValueError("JWT_SECRET_KEY must be provided in production")
+
+    def validate_publisher_runtime(self) -> None:
+        self.validate_runtime()
+        if not self.sqs_ordens_to_recursos_url:
+            raise ValueError("SQS_ORDENS_TO_RECURSOS_URL must be provided")
+        if self.environment == "prod" and self.sqs_endpoint_url is not None:
+            raise ValueError("SQS_ENDPOINT_URL must be omitted in production")
+        positive_values = {
+            "SQS_CONNECT_TIMEOUT_SECONDS": self.sqs_connect_timeout_seconds,
+            "SQS_READ_TIMEOUT_SECONDS": self.sqs_read_timeout_seconds,
+            "SQS_SEND_TIMEOUT_SECONDS": self.sqs_send_timeout_seconds,
+            "PUBLISHER_LEASE_SECONDS": self.publisher_lease_seconds,
+            "PUBLISHER_POLL_INTERVAL_SECONDS": self.publisher_poll_interval_seconds,
+            "PUBLISHER_INITIAL_BACKOFF_SECONDS": self.publisher_initial_backoff_seconds,
+            "PUBLISHER_MAX_BACKOFF_SECONDS": self.publisher_max_backoff_seconds,
+        }
+        invalid = [name for name, value in positive_values.items() if value <= 0]
+        if invalid:
+            raise ValueError(f"publisher settings must be positive: {', '.join(invalid)}")
+        if self.publisher_batch_size <= 0 or self.publisher_max_attempts <= 0:
+            raise ValueError("publisher batch size and max attempts must be positive")
+        if self.publisher_max_backoff_seconds < self.publisher_initial_backoff_seconds:
+            raise ValueError("publisher max backoff must be >= initial backoff")
+        if self.publisher_lease_seconds <= self.sqs_send_timeout_seconds:
+            raise ValueError("publisher lease must exceed the SQS send timeout")
+
+    def validate_consumer_runtime(self) -> None:
+        self.validate_runtime()
+        missing = [
+            name
+            for name, value in {
+                "SQS_RECURSOS_TO_ORDENS_URL": self.sqs_recursos_to_ordens_url,
+                "SQS_FINANCEIRO_TO_ORDENS_URL": self.sqs_financeiro_to_ordens_url,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"consumer queue URLs must be provided: {', '.join(missing)}")
+        if self.environment == "prod" and self.sqs_endpoint_url is not None:
+            raise ValueError("SQS_ENDPOINT_URL must be omitted in production")
+        if not 1 <= self.consumer_batch_size <= 10 or self.consumer_concurrency <= 0:
+            raise ValueError("consumer batch size/concurrency are invalid")
+        if not 0 <= self.consumer_wait_time_seconds <= 20:
+            raise ValueError("consumer wait time must be between 0 and 20")
+        if not 0 < self.consumer_heartbeat_seconds < self.consumer_visibility_timeout_seconds:
+            raise ValueError("consumer heartbeat must be positive and below visibility timeout")
+
+    def validate_reconciliation_runtime(self) -> None:
+        self.validate_runtime()
+        positive = {
+            "RECONCILIATION_BATCH_SIZE": self.reconciliation_batch_size,
+            "RECONCILIATION_CONCURRENCY": self.reconciliation_concurrency,
+            "RECONCILIATION_TIMEOUT_SECONDS": self.reconciliation_timeout_seconds,
+            "RECONCILIATION_RECHECK_SECONDS": self.reconciliation_recheck_seconds,
+            "RECONCILIATION_MAX_BATCHES": self.reconciliation_max_batches,
+        }
+        invalid = [name for name, value in positive.items() if value <= 0]
+        if invalid:
+            raise ValueError(
+                f"reconciliation settings must be positive: {', '.join(invalid)}"
+            )
+        if self.reconciliation_stale_after_seconds < 0:
+            raise ValueError("RECONCILIATION_STALE_AFTER_SECONDS cannot be negative")
 
 
 @lru_cache

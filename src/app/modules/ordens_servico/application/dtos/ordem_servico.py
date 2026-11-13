@@ -70,6 +70,38 @@ class OrdemServicoItemResponse:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ReservaItemSagaResponse:
+    operation_id: str
+    saga_id: str
+    ordem_servico_item_id: str
+    estado: str
+    terminal_result: Optional[str]
+    rejection_code: Optional[str]
+    reservation_id: Optional[str]
+    status_url: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class DistributedOperationResponse:
+    operation_id: str
+    operation_type: str
+    ordem_servico_item_id: str
+    state: str
+    terminal_result: Optional[str]
+    reservation_id: Optional[str]
+    status_url: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeliveryOperationResponse:
+    ordem_servico_id: str
+    order_status: str
+    state: str
+    operation_ids: list[str]
+    status_url: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class OrdemServicoResumoResponse:
     """Resposta resumida — usada na listagem."""
 
@@ -103,6 +135,7 @@ class OrdemServicoDetalheResponse:
     payment_status: Optional[str] = None
     payment_amount: Optional[Decimal] = None
     payment_confirmed_at: Optional[datetime] = None
+    payment_quote_id: Optional[str] = None
     payment_quote_version: Optional[int] = None
     servicos: list[OrdemServicoServicoResponse] = field(default_factory=list)
     itens: list[OrdemServicoItemResponse] = field(default_factory=list)

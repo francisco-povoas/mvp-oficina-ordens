@@ -8,12 +8,18 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.modules.ordens_servico.presentation.dependencies import get_ordem_servico_repo
 from app.shared.infra.api.dependencies.auth import get_usuario_autenticado
 from app.shared.infra.security.jwt import InvalidToken, JWTProvider
 
 SECRET = "segredo-hs256-exclusivo-dos-testes"
 CLIENT_SECRET = "credencial-interna-de-teste"
 CORRELATION_ID = str(uuid4())
+
+
+class MissingOrderRepository:
+    async def obter_por_id(self, order_id):
+        return None
 
 
 def _settings() -> Settings:
@@ -65,7 +71,9 @@ def _issue(client: TestClient, **overrides) -> dict:
 
 def test_internal_token_endpoint_emits_short_lived_service_token() -> None:
     settings = _settings()
-    with TestClient(create_app(settings)) as client:
+    app = create_app(settings)
+    app.dependency_overrides[get_ordem_servico_repo] = MissingOrderRepository
+    with TestClient(app) as client:
         issued = _issue(client)
 
     claims = _provider(settings).decode(
@@ -113,7 +121,9 @@ def test_internal_endpoint_rejects_user_token_and_accepts_exact_service_grant() 
         audience=settings.jwt_user_audience,
     )["access_token"]
 
-    with TestClient(create_app(settings)) as client:
+    app = create_app(settings)
+    app.dependency_overrides[get_ordem_servico_repo] = MissingOrderRepository
+    with TestClient(app) as client:
         rejected = client.get(
             f"/internal/v1/orders/{uuid4()}/quote-context",
             headers={
@@ -131,7 +141,7 @@ def test_internal_endpoint_rejects_user_token_and_accepts_exact_service_grant() 
         )
 
     assert rejected.status_code == 401
-    assert accepted.status_code == 501
+    assert accepted.status_code == 404
 
 
 def test_internal_endpoint_rejects_wrong_scope_audience_and_expiration() -> None:

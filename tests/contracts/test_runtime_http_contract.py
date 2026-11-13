@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from app.config import Settings
 from app.main import create_app
+from app.modules.ordens_servico.presentation.dependencies import get_ordem_servico_repo
 from app.shared.infra.security.jwt import JWTProvider
 
 CONTRACT = json.loads(
@@ -17,6 +18,11 @@ PROBLEM = CONTRACT["components"]["schemas"]["Problem"]
 CORRELATION_ID = str(uuid4())
 SECRET = "segredo-hs256-exclusivo-dos-testes"
 CLIENT_SECRET = "credencial-interna-de-teste"
+
+
+class MissingOrderRepository:
+    async def obter_por_id(self, order_id):
+        return None
 
 
 def _settings() -> Settings:
@@ -82,7 +88,7 @@ def test_success_response_echoes_correlation_and_matches_declared_schema() -> No
     ).validate(response.json())
 
 
-def test_authentication_authorization_and_planned_errors_match_problem() -> None:
+def test_authentication_authorization_and_not_found_errors_match_problem() -> None:
     settings = _settings()
     provider = _provider(settings)
     wrong_scope = provider.create_service_token(
@@ -99,7 +105,9 @@ def test_authentication_authorization_and_planned_errors_match_problem() -> None
     )["access_token"]
     path = f"/internal/v1/orders/{uuid4()}/quote-context"
 
-    with TestClient(create_app(settings)) as client:
+    app = create_app(settings)
+    app.dependency_overrides[get_ordem_servico_repo] = MissingOrderRepository
+    with TestClient(app) as client:
         unauthorized = client.get(
             path, headers={"X-Correlation-ID": CORRELATION_ID}
         )
@@ -110,7 +118,7 @@ def test_authentication_authorization_and_planned_errors_match_problem() -> None
                 "Authorization": f"Bearer {wrong_scope}",
             },
         )
-        planned = client.get(
+        not_found = client.get(
             path,
             headers={
                 "X-Correlation-ID": CORRELATION_ID,
@@ -123,9 +131,9 @@ def test_authentication_authorization_and_planned_errors_match_problem() -> None
 
     _assert_problem(unauthorized, 401, CORRELATION_ID)
     _assert_problem(forbidden, 403, CORRELATION_ID)
-    _assert_problem(planned, 501, CORRELATION_ID)
+    _assert_problem(not_found, 404, CORRELATION_ID)
     _assert_problem(missing_correlation, 422)
-    assert planned.json()["code"] == "INTEGRATION_PLANNED"
+    assert not_found.json()["code"] == "ORDER_NOT_FOUND"
 
 
 def test_unexpected_failure_does_not_expose_internal_detail() -> None:

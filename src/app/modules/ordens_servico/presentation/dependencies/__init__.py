@@ -2,17 +2,21 @@
 
 from typing import Annotated
 
-from fastapi import Depends
+import httpx
+from fastapi import Depends, Request
 
+from app.integrations.finance import FinanceHTTPClient, FinanceStatusPort
 from app.integrations.resources import (
+    RecursoCatalogoPort,
+    RecursosHTTPAdapter,
     RecursosIndisponiveisAdapter,
-    RecursosOperacoesPort,
     ServicoCatalogoPort,
 )
 from app.modules.clientes.infrastructure.db.repositories.cliente_repo import ClienteRepo
 from app.modules.ordens_servico.application.use_cases import (
     AdicionarItemNaOrdemServicoUseCase,
     AdicionarServicoNaOrdemServicoUseCase,
+    CancelarReservaItemSagaUseCase,
     ConcluirDiagnosticoOrdemServicoUseCase,
     ConfirmarRecebimentoItemDaOrdemServicoUseCase,
     CriarOrdemServicoUseCase,
@@ -22,12 +26,17 @@ from app.modules.ordens_servico.application.use_cases import (
     IniciarExecucaoOrdemServicoUseCase,
     ListarExecucoesServicoUseCase,
     ListarOrdensServicoUseCase,
+    ObterDistributedOperationUseCase,
     ObterEstatisticaTempoExecucaoServicoUseCase,
     ObterOrdemServicoPorIdUseCase,
+    ObterReservaItemSagaUseCase,
     RegistrarDiagnosticoOrdemServicoUseCase,
     RegistrarTempoExecutadoServicoUseCase,
     RemoverItemDaOrdemServicoUseCase,
     RemoverServicoDaOrdemServicoUseCase,
+)
+from app.modules.ordens_servico.domain.ports.distributed_operation_repo import (
+    DistributedOperationRepo as DistributedOperationRepoProtocol,
 )
 from app.modules.ordens_servico.domain.ports.ordem_servico_repo import (
     OrdemServicoRepo as OrdemServicoRepoProtocol,
@@ -35,8 +44,17 @@ from app.modules.ordens_servico.domain.ports.ordem_servico_repo import (
 from app.modules.ordens_servico.domain.ports.ordem_servico_uow import (
     OrdemServicoUnitOfWork as OrdemServicoUoWProtocol,
 )
+from app.modules.ordens_servico.domain.ports.reserva_item_saga_repo import (
+    ReservaItemSagaRepo as ReservaItemSagaRepoProtocol,
+)
+from app.modules.ordens_servico.infrastructure.db.repositories.distributed_operation_repo import (
+    PostgresDistributedOperationRepo,
+)
 from app.modules.ordens_servico.infrastructure.db.repositories.ordem_servico_repo import (
     OrdemServicoRepo,
+)
+from app.modules.ordens_servico.infrastructure.db.repositories.reserva_item_saga_repo import (
+    ReservaItemSagaRepo,
 )
 from app.modules.ordens_servico.infrastructure.db.uow.ordem_servico_uow import (
     ordem_servico_uow_factory,
@@ -55,17 +73,60 @@ def get_ordem_servico_repo(
     return OrdemServicoRepo(session)  # type: ignore[return-value]
 
 
-def get_recursos_adapter() -> RecursosIndisponiveisAdapter:
-    return RecursosIndisponiveisAdapter()
+def get_distributed_operation_repo(
+    session: Annotated[DBSession, Depends(get_db_session)],
+) -> DistributedOperationRepoProtocol:
+    return PostgresDistributedOperationRepo(session)
 
 
-_RecursosOperacoesDep = Annotated[RecursosOperacoesPort, Depends(get_recursos_adapter)]
+def get_recursos_adapter(request: Request) -> RecursosIndisponiveisAdapter:
+    settings = request.app.state.settings
+    return RecursosHTTPAdapter(
+        base_url=settings.resources_base_url,
+        service_name="mvp-oficina-recursos",
+        token_provider=request.app.state.service_token_provider,
+        correlation_id=str(request.state.correlation_id),
+        timeout=httpx.Timeout(
+            connect=settings.internal_connect_timeout_seconds,
+            read=settings.internal_read_timeout_seconds,
+            write=settings.internal_read_timeout_seconds,
+            pool=settings.internal_connect_timeout_seconds,
+        ),
+    )
+
+
+_RecursoCatalogoDep = Annotated[RecursoCatalogoPort, Depends(get_recursos_adapter)]
+
+
+def get_financeiro_adapter(request: Request) -> FinanceStatusPort:
+    settings = request.app.state.settings
+    return FinanceHTTPClient(
+        base_url=settings.finance_base_url,
+        service_name="mvp-oficina-financeiro",
+        token_provider=request.app.state.service_token_provider,
+        correlation_id=str(request.state.correlation_id),
+        timeout=httpx.Timeout(
+            connect=settings.internal_connect_timeout_seconds,
+            read=settings.internal_read_timeout_seconds,
+            write=settings.internal_read_timeout_seconds,
+            pool=settings.internal_connect_timeout_seconds,
+        ),
+    )
+
+
+_FinanceiroDep = Annotated[FinanceStatusPort, Depends(get_financeiro_adapter)]
 
 
 def get_ordem_servico_uow(
     session: Annotated[DBSession, Depends(get_db_session)],
 ) -> OrdemServicoUoWProtocol:
     return ordem_servico_uow_factory(session)  # type: ignore[return-value]
+
+
+def get_reserva_item_saga_repo(
+    session: Annotated[DBSession, Depends(get_db_session)],
+) -> ReservaItemSagaRepoProtocol:
+    return ReservaItemSagaRepo(session)  # type: ignore[return-value]
 
 
 def get_cliente_repo(
@@ -80,11 +141,16 @@ def get_veiculo_repo(
     return VeiculoRepo(session)
 
 
-def get_servico_repo() -> ServicoCatalogoPort:
-    return RecursosIndisponiveisAdapter()
+def get_servico_repo(request: Request) -> ServicoCatalogoPort:
+    return get_recursos_adapter(request)
 
 
 _RepoDep = Annotated[OrdemServicoRepoProtocol, Depends(get_ordem_servico_repo)]
+_OperationRepoDep = Annotated[
+    DistributedOperationRepoProtocol,
+    Depends(get_distributed_operation_repo),
+]
+_SagaRepoDep = Annotated[ReservaItemSagaRepoProtocol, Depends(get_reserva_item_saga_repo)]
 _UoWDep = Annotated[OrdemServicoUoWProtocol, Depends(get_ordem_servico_uow)]
 _ClienteRepoDep = Annotated[ClienteRepo, Depends(get_cliente_repo)]
 _VeiculoRepoDep = Annotated[VeiculoRepo, Depends(get_veiculo_repo)]
@@ -133,15 +199,29 @@ def get_remover_servico(uow: _UoWDep) -> RemoverServicoDaOrdemServicoUseCase:
 
 
 def get_adicionar_item(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
+    uow: _UoWDep, recursos: _RecursoCatalogoDep
 ) -> AdicionarItemNaOrdemServicoUseCase:
     return AdicionarItemNaOrdemServicoUseCase(uow=uow, recursos=recursos)
 
 
-def get_remover_item(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
-) -> RemoverItemDaOrdemServicoUseCase:
-    return RemoverItemDaOrdemServicoUseCase(uow=uow, recursos=recursos)
+def get_obter_reserva_item_saga(repo: _SagaRepoDep) -> ObterReservaItemSagaUseCase:
+    return ObterReservaItemSagaUseCase(repo=repo)
+
+
+def get_obter_distributed_operation(
+    repo: _OperationRepoDep,
+) -> ObterDistributedOperationUseCase:
+    return ObterDistributedOperationUseCase(repo=repo)
+
+
+def get_cancelar_reserva_item_saga(
+    uow: _UoWDep,
+) -> CancelarReservaItemSagaUseCase:
+    return CancelarReservaItemSagaUseCase(uow=uow)
+
+
+def get_remover_item(uow: _UoWDep) -> RemoverItemDaOrdemServicoUseCase:
+    return RemoverItemDaOrdemServicoUseCase(uow=uow)
 
 
 def get_concluir_diagnostico(uow: _UoWDep) -> ConcluirDiagnosticoOrdemServicoUseCase:
@@ -149,9 +229,9 @@ def get_concluir_diagnostico(uow: _UoWDep) -> ConcluirDiagnosticoOrdemServicoUse
 
 
 def get_confirmar_recebimento_item(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
+    uow: _UoWDep,
 ) -> ConfirmarRecebimentoItemDaOrdemServicoUseCase:
-    return ConfirmarRecebimentoItemDaOrdemServicoUseCase(uow=uow, recursos=recursos)
+    return ConfirmarRecebimentoItemDaOrdemServicoUseCase(uow=uow)
 
 
 def get_iniciar_execucao(uow: _UoWDep) -> IniciarExecucaoOrdemServicoUseCase:
@@ -167,9 +247,13 @@ def get_finalizar_ordem_servico(uow: _UoWDep) -> FinalizarOrdemServicoUseCase:
 
 
 def get_entregar_ordem_servico(
-    uow: _UoWDep, recursos: _RecursosOperacoesDep
+    uow: _UoWDep,
+    financeiro: _FinanceiroDep,
 ) -> EntregarOrdemServicoUseCase:
-    return EntregarOrdemServicoUseCase(uow=uow, recursos=recursos)
+    return EntregarOrdemServicoUseCase(
+        uow=uow,
+        financeiro=financeiro,
+    )
 
 
 def get_obter_estatistica_tempo_execucao_servico(
@@ -204,6 +288,18 @@ RegistrarDiagnosticoDep = Annotated[RegistrarDiagnosticoOrdemServicoUseCase, Dep
 AdicionarServicoDep = Annotated[AdicionarServicoNaOrdemServicoUseCase, Depends(get_adicionar_servico)]
 RemoverServicoDep = Annotated[RemoverServicoDaOrdemServicoUseCase, Depends(get_remover_servico)]
 AdicionarItemDep = Annotated[AdicionarItemNaOrdemServicoUseCase, Depends(get_adicionar_item)]
+ObterReservaItemSagaDep = Annotated[
+    ObterReservaItemSagaUseCase,
+    Depends(get_obter_reserva_item_saga),
+]
+ObterDistributedOperationDep = Annotated[
+    ObterDistributedOperationUseCase,
+    Depends(get_obter_distributed_operation),
+]
+CancelarReservaItemSagaDep = Annotated[
+    CancelarReservaItemSagaUseCase,
+    Depends(get_cancelar_reserva_item_saga),
+]
 RemoverItemDep = Annotated[RemoverItemDaOrdemServicoUseCase, Depends(get_remover_item)]
 ConcluirDiagnosticoDep = Annotated[ConcluirDiagnosticoOrdemServicoUseCase, Depends(get_concluir_diagnostico)]
 ConfirmarRecebimentoItemDep = Annotated[ConfirmarRecebimentoItemDaOrdemServicoUseCase, Depends(get_confirmar_recebimento_item)]

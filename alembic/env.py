@@ -13,9 +13,12 @@ from app.modules.iam.infrastructure.db.models.perfil import PerfilModel
 from app.modules.iam.infrastructure.db.models.usuario import UsuarioModel
 from app.modules.iam.infrastructure.db.models.usuario_perfil import UsuarioPerfilModel
 from app.modules.ordens_servico.infrastructure.db.models import (
+    DistributedOperationModel,
+    FinancialReconciliationModel,
     OrdemServicoItemModel,
     OrdemServicoModel,
     OrdemServicoServicoModel,
+    ReservaItemSagaModel,
 )
 from app.modules.veiculos.infrastructure.db.models.veiculo import VeiculoModel
 from app.shared.infra.db.outbox_model import OutboxMessageModel
@@ -29,6 +32,9 @@ _MODELS = (
     OrdemServicoModel,
     OrdemServicoServicoModel,
     OrdemServicoItemModel,
+    DistributedOperationModel,
+    FinancialReconciliationModel,
+    ReservaItemSagaModel,
     OutboxMessageModel,
 )
 config = context.config

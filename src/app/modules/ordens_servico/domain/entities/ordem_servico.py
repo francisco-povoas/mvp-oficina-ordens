@@ -34,6 +34,14 @@ class StatusOrdemServico(str, Enum):
     ENCERRADA = "ENCERRADA"
 
 
+class StatusOrcamentoFinanceiro(str, Enum):
+    """Fatos mínimos do orçamento mantidos como projeção em Ordens."""
+
+    COMUNICADO = "COMUNICADO"
+    APROVADO = "APROVADO"
+    RECUSADO = "RECUSADO"
+
+
 # Transições válidas entre status
 _TRANSICOES_VALIDAS: dict[StatusOrdemServico, set[StatusOrdemServico]] = {
     StatusOrdemServico.RECEBIDA: {
@@ -83,11 +91,21 @@ class OrdemServico:
     diagnostico_concluido_em: datetime | None
     version: int = 1
 
+    # Projeção mínima dos fatos de orçamento; Financeiro segue como autoridade.
+    quote_id: UUID | None = None
+    quote_status: StatusOrcamentoFinanceiro | None = None
+    quote_version: int | None = None
+    quote_total: Decimal | None = None
+    quote_communicated_at: datetime | None = None
+    quote_decided_at: datetime | None = None
+    quote_rejection_reason: str | None = None
+
     # Projeção mínima derivada de Financeiro; não é o agregado de pagamento.
     payment_id: UUID | None = None
     payment_status: str | None = None
     payment_amount: Decimal | None = None
     payment_confirmed_at: datetime | None = None
+    payment_quote_id: UUID | None = None
     payment_quote_version: int | None = None
 
     def __post_init__(self) -> None:
@@ -180,6 +198,215 @@ class OrdemServico:
             version=self.version + 1,
         )
 
+    def registrar_orcamento_comunicado(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        total: Decimal,
+        communicated_at: datetime,
+    ) -> "OrdemServico":
+        """Aplica o fato comunicado sem regredir uma decisão financeira posterior."""
+
+        self._validar_fato_orcamento(
+            quote_id=quote_id,
+            quote_version=quote_version,
+            occurred_at=communicated_at,
+        )
+        if total < Decimal("0"):
+            raise OrdemServicoInvalidaError("O total comunicado não pode ser negativo.")
+        if self.quote_version is not None:
+            if quote_version < self.quote_version:
+                return self
+            if quote_version == self.quote_version:
+                if self.quote_status is StatusOrcamentoFinanceiro.COMUNICADO:
+                    if self.quote_total != total:
+                        raise OrdemServicoInvalidaError(
+                            "A mesma versão do orçamento possui total divergente."
+                        )
+                    return self
+                raise OrdemServicoInvalidaError(
+                    "A comunicação contradiz uma decisão financeira da mesma versão."
+                )
+            if self.quote_status in {
+                StatusOrcamentoFinanceiro.APROVADO,
+                StatusOrcamentoFinanceiro.RECUSADO,
+            }:
+                raise OrdemServicoInvalidaError(
+                    "Uma comunicação posterior não pode substituir decisão financeira."
+                )
+
+        if self.status is StatusOrdemServico.DIAGNOSTICO_CONCLUIDO:
+            status = StatusOrdemServico.AGUARDANDO_APROVACAO
+        elif self.status in {
+            StatusOrdemServico.AGUARDANDO_APROVACAO,
+            StatusOrdemServico.AGUARDANDO_ITENS,
+            StatusOrdemServico.APROVADA,
+            StatusOrdemServico.EM_EXECUCAO,
+            StatusOrdemServico.FINALIZADA,
+            StatusOrdemServico.ENTREGUE,
+        }:
+            status = self.status
+        else:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita orçamento comunicado."
+            )
+        return replace(
+            self,
+            status=status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.COMUNICADO,
+            quote_version=quote_version,
+            quote_total=total,
+            quote_communicated_at=communicated_at,
+            quote_decided_at=None,
+        )
+
+    def registrar_orcamento_aprovado(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        approved_at: datetime,
+        possui_item_a_receber: bool,
+    ) -> "OrdemServico":
+        """Registra a aprovação autoritativa respeitando versão e avanço da OS."""
+
+        self._validar_fato_orcamento(
+            quote_id=quote_id,
+            quote_version=quote_version,
+            occurred_at=approved_at,
+        )
+        if self.quote_version is not None:
+            if quote_version < self.quote_version:
+                return self
+            if quote_version == self.quote_version:
+                if self.quote_status is StatusOrcamentoFinanceiro.APROVADO:
+                    return self
+                raise OrdemServicoInvalidaError(
+                    "A decisão financeira contradiz a versão já projetada."
+                )
+
+        if self.status in {
+            StatusOrdemServico.DIAGNOSTICO_CONCLUIDO,
+            StatusOrdemServico.AGUARDANDO_APROVACAO,
+        }:
+            status = (
+                StatusOrdemServico.AGUARDANDO_ITENS
+                if possui_item_a_receber
+                else StatusOrdemServico.APROVADA
+            )
+        elif self.status in {
+            StatusOrdemServico.AGUARDANDO_ITENS,
+            StatusOrdemServico.APROVADA,
+            StatusOrdemServico.EM_EXECUCAO,
+            StatusOrdemServico.FINALIZADA,
+            StatusOrdemServico.ENTREGUE,
+        }:
+            status = self.status
+        else:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita orçamento aprovado."
+            )
+        return replace(
+            self,
+            status=status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.APROVADO,
+            quote_version=quote_version,
+            quote_decided_at=approved_at,
+            quote_rejection_reason=None,
+        )
+
+    def registrar_orcamento_recusado(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        reason: str | None,
+        rejected_at: datetime,
+    ) -> "OrdemServico":
+        """Registra a recusa sem antecipar a liberação física das reservas."""
+
+        self._validar_fato_orcamento(
+            quote_id=quote_id,
+            quote_version=quote_version,
+            occurred_at=rejected_at,
+        )
+        normalized_reason = reason
+        if normalized_reason is not None and len(normalized_reason) > 512:
+            raise OrdemServicoInvalidaError("O motivo da recusa excede 512 caracteres.")
+        if self.quote_version is not None:
+            if quote_version < self.quote_version:
+                return self
+            if quote_version == self.quote_version:
+                if self.quote_status is StatusOrcamentoFinanceiro.RECUSADO:
+                    if self.quote_rejection_reason != normalized_reason:
+                        raise OrdemServicoInvalidaError(
+                            "A mesma recusa possui motivo divergente."
+                        )
+                    return self
+                raise OrdemServicoInvalidaError(
+                    "A decisão financeira contradiz a versão já projetada."
+                )
+
+        if self.status is StatusOrdemServico.DIAGNOSTICO_CONCLUIDO:
+            status = StatusOrdemServico.AGUARDANDO_APROVACAO
+        elif self.status is StatusOrdemServico.AGUARDANDO_APROVACAO:
+            status = self.status
+        else:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita orçamento recusado."
+            )
+        return replace(
+            self,
+            status=status,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.RECUSADO,
+            quote_version=quote_version,
+            quote_decided_at=rejected_at,
+            quote_rejection_reason=normalized_reason,
+        )
+
+    def encerrar_por_recusa_financeira(self) -> "OrdemServico":
+        """Encerra somente depois que toda limpeza física foi confirmada."""
+
+        if (
+            self.quote_status is not StatusOrcamentoFinanceiro.RECUSADO
+            or self.status is not StatusOrdemServico.AGUARDANDO_APROVACAO
+        ):
+            raise OrdemServicoTransicaoInvalidaError(
+                "A OS só pode encerrar após recusa financeira registrada."
+            )
+        return replace(
+            self,
+            status=StatusOrdemServico.ENCERRADA,
+            atualizado_em=datetime.now(UTC),
+            version=self.version + 1,
+        )
+
+    def _validar_fato_orcamento(
+        self,
+        *,
+        quote_id: UUID,
+        quote_version: int,
+        occurred_at: datetime,
+    ) -> None:
+        if quote_version < 1:
+            raise OrdemServicoInvalidaError("A versão do orçamento deve ser positiva.")
+        if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+            raise OrdemServicoInvalidaError("O fato financeiro deve possuir timezone.")
+        if self.quote_id is not None and self.quote_id != quote_id:
+            raise OrdemServicoInvalidaError(
+                "O fato financeiro pertence a outro orçamento da OS."
+            )
+
     def iniciar_execucao(
         self,
         itens_ativos_status: list[str],
@@ -236,6 +463,7 @@ class OrdemServico:
         self,
         *,
         payment_id: UUID,
+        quote_id: UUID,
         amount: Decimal,
         confirmed_at: datetime,
         quote_version: int,
@@ -244,14 +472,58 @@ class OrdemServico:
 
         if amount <= Decimal("0") or quote_version < 1:
             raise OrdemServicoInvalidaError("Projeção financeira inválida.")
+        if confirmed_at.tzinfo is None or confirmed_at.utcoffset() is None:
+            raise OrdemServicoInvalidaError(
+                "A confirmação do pagamento deve possuir timezone."
+            )
+        if self.status not in {
+            StatusOrdemServico.FINALIZADA,
+            StatusOrdemServico.ENTREGUE,
+        }:
+            raise OrdemServicoTransicaoInvalidaError(
+                f"OS em '{self.status.value}' não aceita pagamento confirmado."
+            )
+        if self.quote_id is not None and self.quote_id != quote_id:
+            raise OrdemServicoInvalidaError(
+                "O pagamento pertence a outro orçamento da OS."
+            )
+        if self.quote_version is not None and self.quote_version > quote_version:
+            raise OrdemServicoInvalidaError(
+                "O pagamento referencia versão anterior do orçamento."
+            )
+        if self.quote_status is StatusOrcamentoFinanceiro.RECUSADO:
+            raise OrdemServicoInvalidaError(
+                "Pagamento confirmado não pode referenciar orçamento recusado."
+            )
+        if self.quote_total is not None and amount < self.quote_total:
+            raise OrdemServicoInvalidaError(
+                "O pagamento confirmado é menor que o orçamento projetado."
+            )
+        if self.payment_id is not None:
+            if (
+                self.payment_id == payment_id
+                and self.payment_status == "CONFIRMED"
+                and self.payment_quote_id == quote_id
+                and self.payment_quote_version == quote_version
+                and self.payment_amount == amount
+                and self.payment_confirmed_at == confirmed_at
+            ):
+                return self
+            raise OrdemServicoInvalidaError(
+                "A OS já possui outro pagamento confirmado."
+            )
         return replace(
             self,
             atualizado_em=datetime.now(UTC),
             version=self.version + 1,
+            quote_id=quote_id,
+            quote_status=StatusOrcamentoFinanceiro.APROVADO,
+            quote_version=quote_version,
             payment_id=payment_id,
             payment_status="CONFIRMED",
             payment_amount=amount,
             payment_confirmed_at=confirmed_at,
+            payment_quote_id=quote_id,
             payment_quote_version=quote_version,
         )
 

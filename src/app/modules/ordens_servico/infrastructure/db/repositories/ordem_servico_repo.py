@@ -9,6 +9,7 @@ from sqlmodel import select
 
 from app.modules.ordens_servico.domain.entities.ordem_servico import (
     OrdemServico,
+    StatusOrcamentoFinanceiro,
     StatusOrdemServico,
 )
 from app.modules.ordens_servico.domain.entities.ordem_servico_item import (
@@ -56,10 +57,18 @@ class OrdemServicoRepo:
             iniciado_diagnostico_em=os.iniciado_diagnostico_em,
             diagnostico_concluido_em=os.diagnostico_concluido_em,
             version=os.version,
+            quote_id=os.quote_id,
+            quote_status=os.quote_status.value if os.quote_status else None,
+            quote_version=os.quote_version,
+            quote_total=os.quote_total,
+            quote_communicated_at=os.quote_communicated_at,
+            quote_decided_at=os.quote_decided_at,
+            quote_rejection_reason=os.quote_rejection_reason,
             payment_id=os.payment_id,
             payment_status=os.payment_status,
             payment_amount=os.payment_amount,
             payment_confirmed_at=os.payment_confirmed_at,
+            payment_quote_id=os.payment_quote_id,
             payment_quote_version=os.payment_quote_version,
         )
         self.session.add(model)
@@ -69,6 +78,16 @@ class OrdemServicoRepo:
         if not model:
             return None
         return self._os_to_entity(model)
+
+    async def obter_por_id_com_lock(self, _id: ID) -> Optional[OrdemServico]:
+        result = await self.session.exec(
+            select(OrdemServicoModel)
+            .where(OrdemServicoModel.id == _id.value)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        model = result.first()
+        return self._os_to_entity(model) if model else None
 
     async def atualizar(self, os: OrdemServico) -> Optional[OrdemServico]:
         versao_anterior = os.version - 1
@@ -91,10 +110,18 @@ class OrdemServicoRepo:
                 iniciado_diagnostico_em=os.iniciado_diagnostico_em,
                 diagnostico_concluido_em=os.diagnostico_concluido_em,
                 version=os.version,
+                quote_id=os.quote_id,
+                quote_status=os.quote_status.value if os.quote_status else None,
+                quote_version=os.quote_version,
+                quote_total=os.quote_total,
+                quote_communicated_at=os.quote_communicated_at,
+                quote_decided_at=os.quote_decided_at,
+                quote_rejection_reason=os.quote_rejection_reason,
                 payment_id=os.payment_id,
                 payment_status=os.payment_status,
                 payment_amount=os.payment_amount,
                 payment_confirmed_at=os.payment_confirmed_at,
+                payment_quote_id=os.payment_quote_id,
                 payment_quote_version=os.payment_quote_version,
             )
             .execution_options(synchronize_session=False)
@@ -263,6 +290,17 @@ class OrdemServicoRepo:
         model = result.first()
         return self._osi_to_entity(model) if model else None
 
+    async def obter_item_por_id_com_lock(
+        self, _id: ID
+    ) -> Optional[OrdemServicoItem]:
+        result = await self.session.exec(
+            select(OrdemServicoItemModel)
+            .where(OrdemServicoItemModel.id == _id.value)
+            .with_for_update()
+        )
+        model = result.first()
+        return self._osi_to_entity(model) if model else None
+
     # -----------------------------------------------------------------------
     # Conversão model → entidade
     # -----------------------------------------------------------------------
@@ -281,6 +319,21 @@ class OrdemServicoRepo:
             iniciado_diagnostico_em=model.iniciado_diagnostico_em,
             diagnostico_concluido_em=model.diagnostico_concluido_em,
             version=model.version,
+            quote_id=model.quote_id,
+            quote_status=(
+                StatusOrcamentoFinanceiro(model.quote_status)
+                if model.quote_status
+                else None
+            ),
+            quote_version=model.quote_version,
+            quote_total=(
+                Decimal(str(model.quote_total))
+                if model.quote_total is not None
+                else None
+            ),
+            quote_communicated_at=model.quote_communicated_at,
+            quote_decided_at=model.quote_decided_at,
+            quote_rejection_reason=model.quote_rejection_reason,
             payment_id=model.payment_id,
             payment_status=model.payment_status,
             payment_amount=(
@@ -289,6 +342,7 @@ class OrdemServicoRepo:
                 else None
             ),
             payment_confirmed_at=model.payment_confirmed_at,
+            payment_quote_id=model.payment_quote_id,
             payment_quote_version=model.payment_quote_version,
         )
 

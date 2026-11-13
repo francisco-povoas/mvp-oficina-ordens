@@ -16,6 +16,9 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                     constraint["name"]
                     for constraint in inspector.get_check_constraints("ordem_servico")
                 },
+                "order_indexes": {
+                    index["name"] for index in inspector.get_indexes("ordem_servico")
+                },
                 "item_checks": {
                     constraint["name"]
                     for constraint in inspector.get_check_constraints("ordem_servico_item")
@@ -25,6 +28,59 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
                 "outbox_indexes": {
                     index["name"] for index in inspector.get_indexes("outbox_message")
                 },
+                "outbox_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("outbox_message")
+                },
+                "outbox_columns": {
+                    column["name"] for column in inspector.get_columns("outbox_message")
+                },
+                "inbox_message_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("inbox_message")
+                },
+                "inbox_effect_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("inbox_effect")
+                },
+                "inbox_indexes": {
+                    index["name"] for index in inspector.get_indexes("inbox_message")
+                },
+                "saga_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints("reserva_item_saga")
+                },
+                "saga_indexes": {
+                    index["name"]
+                    for index in inspector.get_indexes("reserva_item_saga")
+                },
+                "saga_fks": inspector.get_foreign_keys("reserva_item_saga"),
+                "operation_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints(
+                        "distributed_operation"
+                    )
+                },
+                "operation_indexes": {
+                    index["name"]
+                    for index in inspector.get_indexes("distributed_operation")
+                },
+                "operation_fks": inspector.get_foreign_keys(
+                    "distributed_operation"
+                ),
+                "financial_reconciliation_checks": {
+                    constraint["name"]
+                    for constraint in inspector.get_check_constraints(
+                        "financial_reconciliation"
+                    )
+                },
+                "financial_reconciliation_indexes": {
+                    index["name"]
+                    for index in inspector.get_indexes("financial_reconciliation")
+                },
+                "financial_reconciliation_fks": inspector.get_foreign_keys(
+                    "financial_reconciliation"
+                ),
             }
 
         schema = await connection.run_sync(inspect_schema)
@@ -40,10 +96,24 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
         "ordem_servico_servico",
         "ordem_servico_item",
         "outbox_message",
+        "inbox_message",
+        "inbox_effect",
+        "reserva_item_saga",
+        "distributed_operation",
+        "financial_reconciliation",
     }
-    assert revision == "20261107_01_ordens"
+    assert revision == "20261112_11_fin_recon_select"
     assert schema["tables"] == expected_tables
-    assert "ck_ordem_status_publico" in schema["order_checks"]
+    assert {
+        "ck_ordem_status_publico",
+        "ck_ordem_quote_status",
+        "ck_ordem_quote_version",
+        "ck_ordem_quote_total",
+        "ck_ordem_quote_identity",
+        "ck_ordem_quote_rejection_reason",
+        "ck_ordem_payment_projection",
+    } <= schema["order_checks"]
+    assert "ix_ordem_financial_reconciliation_selection" in schema["order_indexes"]
     assert {
         "ck_os_item_quantidade_positiva",
         "ck_os_item_valor_nao_negativo",
@@ -52,6 +122,85 @@ async def test_alembic_aplica_schema_independente_desde_banco_vazio(
     assert {fk["referred_table"] for fk in schema["item_fks"]} == {"ordem_servico"}
     assert {fk["referred_table"] for fk in schema["service_fks"]} == {"ordem_servico"}
     assert "ix_outbox_pending" in schema["outbox_indexes"]
+    assert "ix_outbox_claimable" in schema["outbox_indexes"]
+    assert {
+        "ck_outbox_claim_completo",
+        "ck_outbox_claim_expiracao_valida",
+        "ck_outbox_falha_com_erro",
+    } <= schema["outbox_checks"]
+    assert {
+        "next_attempt_at",
+        "claim_id",
+        "claimed_by",
+        "claimed_at",
+        "claim_expires_at",
+        "last_error",
+        "last_failed_at",
+    } <= schema["outbox_columns"]
+    assert "saga_id" in schema["outbox_columns"]
+    assert {
+        "ck_inbox_message_version",
+        "ck_inbox_receive_count_positivo",
+        "ck_inbox_message_status",
+        "ck_inbox_message_processing",
+    } <= schema["inbox_message_checks"]
+    assert {"ck_inbox_effect_status", "ck_inbox_effect_processing"} <= schema[
+        "inbox_effect_checks"
+    ]
+    assert {"ix_inbox_message_business_key", "ix_inbox_message_operation_id"} <= schema[
+        "inbox_indexes"
+    ]
+    assert {
+        "ck_reserva_saga_quantity_positiva",
+        "ck_reserva_saga_version_positiva",
+        "ck_reserva_saga_estado",
+        "ck_reserva_saga_comando",
+        "ck_reserva_saga_resultado_terminal",
+        "ck_reserva_saga_rejeicao",
+        "ck_reserva_saga_terminal",
+        "ck_reserva_saga_idempotency_key",
+        "ck_reserva_saga_request_hash",
+        "ck_reserva_saga_snapshot_valor",
+    } <= schema["saga_checks"]
+    assert {fk["referred_table"] for fk in schema["saga_fks"]} == {"ordem_servico"}
+    assert {
+        "ix_reserva_item_saga_operation_id",
+        "ix_reserva_item_saga_ordem_servico_id",
+        "ix_reserva_item_saga_estado",
+    } <= schema["saga_indexes"]
+    assert schema["financial_reconciliation_checks"] == {
+        "ck_financial_reconciliation_status"
+    }
+    assert "ix_financial_reconciliation_selection" in schema[
+        "financial_reconciliation_indexes"
+    ]
+    assert {
+        fk["referred_table"] for fk in schema["financial_reconciliation_fks"]
+    } == {"ordem_servico"}
+    assert {
+        "ck_distributed_operation_quantity",
+        "ck_distributed_operation_version",
+        "ck_distributed_operation_type",
+        "ck_distributed_operation_state",
+        "ck_distributed_operation_terminal_result",
+        "ck_distributed_operation_request_hash",
+        "ck_distributed_operation_business_key",
+        "ck_distributed_operation_lifecycle",
+        "ck_distributed_operation_result_metadata",
+        "ck_distributed_operation_command_contract",
+        "ck_distributed_operation_result_contract",
+        "ck_distributed_operation_terminal_contract",
+    } <= schema["operation_checks"]
+    assert {
+        "ix_distributed_operation_ordem_servico_id",
+        "ix_distributed_operation_ordem_servico_item_id",
+        "ix_distributed_operation_state",
+        "ix_distributed_operation_reservation_id",
+    } <= schema["operation_indexes"]
+    assert {fk["referred_table"] for fk in schema["operation_fks"]} == {
+        "ordem_servico",
+        "ordem_servico_item",
+    }
 
 
 async def test_schema_nao_contem_tabelas_ou_fks_de_outros_servicos(

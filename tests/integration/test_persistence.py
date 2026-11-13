@@ -286,6 +286,7 @@ async def test_outbox_e_estrutura_persistente_sem_publicacao(
         occurred_at=now,
         published_at=None,
         attempts=0,
+        next_attempt_at=now,
     )
     factory = _factory(db_engine)
     async with factory() as session:
