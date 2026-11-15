@@ -14,6 +14,10 @@ services:
       - "5438:5432"
     volumes:
       - ordens_data:/var/lib/postgresql/data
+    networks:
+      default: {}
+      messaging:
+        aliases: [ordens-db-shared]
 
   api:
     build:
@@ -25,11 +29,29 @@ services:
       DATABASE_URL: postgresql+asyncpg://ordens:ordens@db:5432/ordens
       JWT_SECRET_KEY: chave-local-nao-usar-em-producao
       JWT_ALGORITHM: HS256
+      ADMIN_NOME: ${ADMIN_NOME:-Administrador}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?use --env-file da Infra}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?use --env-file da Infra}
+      SERVICE_CLIENTS_JSON: ${LOCAL_SERVICE_CLIENTS_JSON:?use --env-file da Infra}
+      INTERNAL_AUTH_URL: http://ordens-api:8001/internal/v1/auth/token
+      RESOURCES_BASE_URL: http://recursos-api:8002
+      FINANCE_BASE_URL: http://financeiro-api:8003
+      SERVICE_CLIENT_ID: mvp-oficina-ordens
+      SERVICE_CLIENT_SECRET: ${LOCAL_SERVICE_CLIENT_SECRET:?use --env-file da Infra}
     ports:
       - "8001:8001"
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      default: {}
+      messaging:
+        aliases: [ordens-api]
 
 volumes:
   ordens_data:
+
+networks:
+  messaging:
+    name: mvp-oficina-distributed-foundation_service-mesh
+    external: true

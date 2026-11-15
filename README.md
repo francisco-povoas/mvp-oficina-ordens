@@ -54,7 +54,10 @@ preparação do deployment AWS. A Etapa 1 não contém placeholders Kubernetes.
 ## Execução e validação
 
 Requer Python 3.12. Para desenvolvimento local, copie as variáveis de exemplo sem
-versionar segredos.
+versionar segredos. Na inicialização, a API aplica as migrations e executa um bootstrap
+idempotente que garante os perfis `Administrador`, `Atendente` e `Mecanico`. Se ainda
+não houver administrador ativo, `ADMIN_NOME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` são
+obrigatórios; reinicializações preservam usuário, perfis e hash existentes.
 
 ```bash
 make install
