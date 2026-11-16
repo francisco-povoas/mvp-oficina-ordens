@@ -1,151 +1,177 @@
 # MVP Oficina — Ordens
 
-Microsserviço da Fase 4 responsável por IAM, clientes, veículos e ordens de serviço,
-incluindo diagnóstico, execução, máquina de estados da OS e estados operacionais dos
-itens. O serviço não é dono de catálogo, estoque, orçamento ou pagamento.
+Microsserviço responsável por identidade e acesso, clientes, veículos, ordens de
+serviço (OS), diagnóstico, execução e orquestração das operações distribuídas da
+oficina.
 
-## Estado da Etapa 1
+## Sumário
 
-Os quatro módulos (`iam`, `clientes`, `veiculos` e `ordens_servico`) estão extraídos e
-organizados por `domain`, `application`, `infrastructure` e `presentation`, com ports e
-adapters locais. O serviço usa PostgreSQL próprio, SQLModel e migrations Alembic; não
-consulta bancos ou modelos dos outros microsserviços.
+- [Responsabilidades](#responsabilidades)
+- [Tecnologias e persistência](#tecnologias-e-persistência)
+- [Ciclo de vida da OS](#ciclo-de-vida-da-os)
+- [Integrações e Saga](#integrações-e-saga)
+- [Autenticação e autorização](#autenticação-e-autorização)
+- [Execução local](#execução-local)
+- [Swagger](#swagger)
+- [Testes e cobertura](#testes-e-cobertura)
+- [Documentação relacionada](#documentação-relacionada)
 
-A Outbox transacional, o publisher e os consumers técnicos independentes estão ativos
-na Etapa 2. O publisher reivindica lotes com lease e `FOR UPDATE SKIP LOCKED`, valida o
-envelope contra o JSON Schema v1 e publica os quatro comandos de Ordens na fila FIFO de
-Recursos. Os consumers validam e recebem os resultados de Recursos e os eventos de
-Financeiro com Inbox persistente. Os resultados da Saga de reserva e compensação já
-possuem handler funcional; mensagens de estoque e eventos financeiros ainda não
-implementados permanecem *fail-closed* e não recebem ACK.
+## Responsabilidades
 
-## APIs, autenticação e contratos
-
-- Rotas públicas usam JWT de usuário emitido pelo próprio módulo IAM e aplicam os
-  perfis da oficina.
-- Rotas `/internal/v1` distinguem tokens de serviço por `token_use`, audiência e
-  escopo. Ordens também fornece o endpoint interno de emissão dessas credenciais.
-- Os contratos versionados em `contracts/` descrevem contextos internos de orçamento e
-  pagamento, envelope/erros comuns e mensagens da futura Saga com Recursos.
-- A dependência de Recursos está expressa por ports. Os adapters atuais são
-  deliberadamente *fail-closed* nos fluxos ainda não conectados a consumers: operações
-  que exigem reserva, recebimento, liberação ou consumo não simulam integração.
-- A reconciliação com Financeiro e os eventos financeiros são contratos planejados;
-  não há comunicação distribuída funcional na Etapa 1.
-
-Assim, fluxos puramente locais funcionam, mas operações que atravessam Recursos ou
-Financeiro só serão integradas na Etapa 2. Os arquivos de contrato não significam que
-REST distribuído ou mensageria já estejam ativos.
-
-## Estrutura
-
-| Caminho | Responsabilidade |
+| Módulo | Responsabilidade |
 |---|---|
-| `src/app/modules/` | IAM, clientes, veículos e ordens em Clean Architecture modular |
-| `src/app/integrations/` | ports, comandos e adapters fail-closed para Recursos |
-| `alembic/` | baseline e tabelas de Outbox/Inbox no PostgreSQL de Ordens |
-| `contracts/` | OpenAPI, JSON Schemas próprios e cópia vendorizada do contrato financeiro consumido |
-| `tests/` | testes unitários, de contratos e de integração PostgreSQL |
-| `.github/workflows/ci.yml` | Ruff, suítes com cobertura mínima de 80% e build da imagem |
+| IAM | usuários, perfis, login, emissão de JWT e credenciais internas de serviço |
+| Clientes | cadastro, consulta, atualização, ativação e desativação |
+| Veículos | cadastro e vínculo com clientes |
+| Ordens de serviço | recepção, diagnóstico, itens e serviços aplicados, execução, finalização e entrega |
+| Integração distribuída | Saga de reserva, operações de estoque, projeção financeira, Outbox, Inbox e reconciliação |
 
-Os manifests Kubernetes específicos serão materializados somente na Etapa 4, junto da
-preparação do deployment AWS. A Etapa 1 não contém placeholders Kubernetes.
+Ordens não mantém catálogo, saldo de estoque, orçamento ou pagamento. Os dados de
+serviços e peças usados por uma OS são snapshots; Recursos e Financeiro continuam
+sendo as autoridades de seus próprios agregados.
 
-## Execução e validação
+## Tecnologias e persistência
 
-Requer Python 3.12. Para desenvolvimento local, copie as variáveis de exemplo sem
-versionar segredos. Na inicialização, a API aplica as migrations e executa um bootstrap
-idempotente que garante os perfis `Administrador`, `Atendente` e `Mecanico`. Se ainda
-não houver administrador ativo, `ADMIN_NOME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` são
-obrigatórios; reinicializações preservam usuário, perfis e hash existentes.
+- Python 3.12, FastAPI, Pydantic e Uvicorn;
+- PostgreSQL 16, SQLModel/SQLAlchemy e Alembic;
+- boto3 com SQS FIFO em produção ou ElasticMQ no ambiente local;
+- JWT HS256 com `python-jose` e hashes de senha com bcrypt;
+- JSON Schema para mensagens versionadas;
+- OpenTelemetry para traces e métricas;
+- Pytest, pytest-cov e Ruff.
 
-```bash
-make install
-make lint
-make test
-make build
-docker compose up --build
+O PostgreSQL de Ordens é exclusivo. Nele ficam IAM, clientes, veículos, OS,
+snapshots, estados operacionais dos itens, Saga, operações distribuídas, Outbox,
+Inbox e a projeção mínima de orçamento/pagamento. Não existem consultas aos bancos
+de Recursos ou Financeiro.
+
+## Ciclo de vida da OS
+
+Fluxo principal:
+
+```text
+RECEBIDA → EM_DIAGNOSTICO → DIAGNOSTICO_CONCLUIDO
+         → AGUARDANDO_APROVACAO → APROVADA → EM_EXECUCAO
+         → FINALIZADA → ENTREGUE
 ```
 
-Para a suíte isolada com PostgreSQL e ciclo Alembic:
+Variações implementadas:
+
+- aprovação com peça pendente leva a `AGUARDANDO_ITENS`; o recebimento de todas as
+  peças pendentes leva a `APROVADA`;
+- recusa do orçamento parte de `AGUARDANDO_APROVACAO`, libera reservas quando
+  necessário e termina em `ENCERRADA`;
+- `ENTREGUE` e `ENCERRADA` são estados terminais;
+- iniciar a execução exige ausência de peça `A_RECEBER` e de operação pendente;
+- finalizar exige tempo registrado para os serviços ativos;
+- entregar exige pagamento confirmado e consumo confirmado de cada reserva em uso.
+
+O diagrama completo está em
+[Ciclo de vida da OS](../mvp-oficina-infra/docs/diagrams/ciclo-vida-os.md).
+
+## Integrações e Saga
+
+### Recursos
+
+Consultas de catálogo são REST síncronas, autenticadas com token de serviço. As
+alterações de estoque são assíncronas por filas FIFO:
+
+- reserva: `ReserveItem.v1` → `ResourceReserved.v1`, `ItemBackordered.v1` ou
+  `ReservationRejected.v1`;
+- compensação: `ReleaseReservation.v1` → `ReservationReleased.v1`;
+- recebimento: `ReceiveBackorderedItem.v1` → `BackorderedItemReceived.v1`;
+- consumo: `ConsumeReservation.v1` → `ReservationConsumed.v1`.
+
+Ordens orquestra e persiste a Saga de inclusão de peça. A criação da operação e o
+comando de reserva são gravados na mesma transação local. Cada operação usa
+`operation_id`, e Outbox/Inbox suportam entrega *at-least-once* sem repetir o efeito
+de negócio. Estoque insuficiente é um resultado válido (`A_RECEBER`), não uma falha.
+O cancelamento de uma inclusão pendente libera uma reserva já criada e termina a
+Saga como `COMPENSATED`.
+
+### Financeiro
+
+Financeiro consulta por REST os contextos de orçamento e pagamento. Seus fatos
+duráveis chegam pela fila Financeiro → Ordens:
+
+- `QuoteCommunicated.v1` leva a OS para `AGUARDANDO_APROVACAO`;
+- `QuoteApproved.v1` leva para `APROVADA` ou `AGUARDANDO_ITENS`;
+- `QuoteRejected.v1` inicia cancelamentos/liberações e encerra a OS;
+- `PaymentConfirmed.v1` atualiza a projeção usada na entrega.
+
+Um worker *one-shot* também reconcilia fatos financeiros por REST sem presumir
+sucesso quando Financeiro está indisponível.
+
+## Autenticação e autorização
+
+Ordens autentica usuários e emite JWT HS256. As APIs públicas dos três serviços
+validam localmente assinatura, emissor, audiência, expiração e perfis. Os perfis
+implementados são `Administrador`, `Atendente` e `Mecanico`; cada rota declara os
+perfis aceitos.
+
+As rotas `/internal/v1` não usam o token de usuário. Elas exigem JWT curto de serviço
+com `token_use`, audiência e escopo. Segredos, senhas e `SERVICE_CLIENTS_JSON` devem
+ser fornecidos por variáveis de ambiente ou Secret e nunca versionados.
+
+## Execução local
+
+O caminho recomendado para executar todo o sistema é o Kubernetes local descrito no
+[README de Infra](../mvp-oficina-infra/README.md#subir-o-ambiente-no-minikube).
+
+Para preparar o serviço no host:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+make install
+```
+
+As variáveis estão documentadas em `.env.example`. A API requer PostgreSQL migrado,
+os dados obrigatórios do primeiro administrador e credenciais internas. O processo
+runtime executado pelo container aplica Alembic, realiza o bootstrap idempotente do
+IAM e inicia o Uvicorn por `scripts/start.sh`.
+
+Para validar a integração real da Saga entre Ordens e Recursos, mantendo os quatro
+repositórios como diretórios irmãos:
+
+```bash
+./scripts/test-distributed-saga.sh
+```
+
+## Swagger
+
+Com o Checkpoint A ativo, abra um terminal e mantenha o port-forward em execução:
+
+```bash
+kubectl --context=minikube -n mvp-oficina port-forward service/ordens-api 8001:8001
+```
+
+Swagger UI: <http://127.0.0.1:8001/docs>
+
+OpenAPI JSON: <http://127.0.0.1:8001/openapi.json>
+
+O Kong não publica `/docs`, `/openapi.json` nem `/internal/v1`; use o Service
+`ordens-api` diretamente.
+
+## Testes e cobertura
+
+```bash
+make lint
+make test
+```
+
+`make test` executa `pytest` com cobertura de branches sobre `src/app`; o gate
+configurado em `pyproject.toml` falha abaixo de 80% e mostra as linhas não cobertas.
+Para a suíte isolada com PostgreSQL real e ciclo Alembic:
 
 ```bash
 docker compose -f compose.test.yaml run --rm --build tests
 docker compose -f compose.test.yaml down --volumes --remove-orphans
 ```
 
-Para validar a Saga real entre Ordens e Recursos com duas bases PostgreSQL, ElasticMQ
-e os quatro workers, mantenha os repositórios como diretórios irmãos e execute:
+## Documentação relacionada
 
-```bash
-./scripts/test-distributed-saga.sh
-```
-
-O runner remove containers e volumes temporários ao terminar, inclusive em caso de
-falha.
-
-O health check fica em `GET /health` na porta `8001`. O CI executa lint, testes
-unitários, contratuais e de integração com PostgreSQL/ElasticMQ, gate global de
-cobertura e build sem publicar a imagem.
-
-## Publisher da Outbox
-
-O publisher é outro processo da mesma imagem e não depende do FastAPI. Ele exige as
-variáveis `DATABASE_URL`, `AWS_REGION`, `SQS_ORDENS_TO_RECURSOS_URL` e, somente em
-desenvolvimento/testes, `SQS_ENDPOINT_URL` e credenciais fictícias do ElasticMQ.
-Timeouts, tamanho do lote, lease, polling e backoff estão documentados em
-`.env.example`. Depois das migrations, execute:
-
-```bash
-python -m app.publisher
-# ou, dentro da imagem runtime:
-./scripts/start-publisher.sh
-```
-
-SIGTERM e SIGINT interrompem novos polls e permitem concluir a mensagem em andamento.
-A publicação é at-least-once: se o broker aceitar a mensagem e a confirmação local
-falhar, o lease expira e uma nova instância pode reenviar o mesmo `message_id`.
-
-## Consumers e Inbox
-
-O processo `app.consumer` hospeda dois consumers lógicos: resultados de Recursos e
-eventos financeiros. Cada mensagem é validada pelo contrato da origem antes de entrar
-na transação PostgreSQL. A mesma transação grava a Inbox, o marcador idempotente do
-efeito e o efeito executado pelo handler. A deduplicação cobre tanto reentrega do mesmo
-`message_id` quanto uma nova emissão do mesmo efeito de negócio; payload divergente
-para a mesma chave é rejeitado como conflito.
-
-O transporte usa entrega at-least-once, concorrência limitada, renovação de
-visibilidade durante processamento e ACK somente depois do commit. Falhas permanecem
-disponíveis para retry e seguem a redrive policy da fila até a DLQ. Para executar:
-
-```bash
-python -m app.consumer
-# ou, dentro da imagem runtime:
-./scripts/start-consumer.sh
-```
-
-Por segurança, a composição padrão ativa somente o handler da Saga implementada.
-Tipos ainda sem handler falham sem ACK e permanecem disponíveis para retry/DLQ.
-SIGTERM e SIGINT encerram novos polls e aguardam o trabalho em andamento.
-
-## Reconciliação financeira
-
-A reconciliação é um processo one-shot independente do FastAPI. Ela seleciona apenas
-OS elegíveis e vencidas, usa paginação por cursor, lote e concorrência limitados,
-consulta `financial-status` com JWT de serviço e registra o resultado persistente por
-OS. Timeout ou indisponibilidade não criam decisão financeira; a próxima execução
-externa tenta novamente depois do intervalo configurado.
-
-```bash
-python -m app.financial_reconciliation_worker
-```
-
-As variáveis `RECONCILIATION_*` em `.env.example` controlam lote, número máximo de
-páginas, concorrência, timeout, idade mínima e intervalo de nova verificação. O
-processo aceita SIGTERM/SIGINT, conclui o trabalho já iniciado e não contém scheduler
-próprio nem requer CronJob Kubernetes.
-
-## Próxima etapa funcional
-
-A Etapa 2 permanece em aceite; a Etapa 3 não é iniciada automaticamente.
+- [Arquitetura distribuída](../mvp-oficina-infra/docs/diagrams/arquitetura.md)
+- [Saga e comunicação](../mvp-oficina-infra/docs/diagrams/saga-comunicacao.md)
+- [Contratos de Ordens](contracts/README.md)
+- [README principal de Infra](../mvp-oficina-infra/README.md)
